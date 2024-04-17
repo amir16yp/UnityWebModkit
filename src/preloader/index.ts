@@ -51,12 +51,14 @@ async function fallbackInterceptFetch(): Promise<WebData> {
   return new Promise<WebData>((resolve) => {
     const originalFetch = window.fetch;
     window.fetch = async function (url) {
-      if ((url as string).includes("webgl.data.br")) {
+      if ((url as string).includes(".data")) {
+        logger.info("5: Found request!")
         window.fetch = originalFetch;
         const response = await originalFetch.apply(this, arguments as any);
         resolve(parseWebData(await response.clone().arrayBuffer()));
         return response;
       }
+      logger.info("5: Not matched %s", url)
       return originalFetch.apply(this, arguments as any);
     };
   });

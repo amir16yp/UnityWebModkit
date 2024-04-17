@@ -6,7 +6,8 @@
   "types": "./lib/mod.d.ts",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "build": "del /q /s dist && tsc && npx webpack && powershell -Command \"(Get-Content -Path ./dist/*.js -Raw) -replace 'window.UnityWebModkit=n', 'if (!unsafeWindow?.UnityWebModkit)unsafeWindow.UnityWebModkit = n,window.UnityWebModkit = n' | Set-Content -Path ./dist/*.js\""
+    "build": "del /q /s dist && tsc && npx webpack && powershell -Command \"(Get-Content -Path ./dist/*.js -Raw) -replace 'window.UnityWebModkit=n', 'if (!unsafeWindow?.UnityWebModkit)unsafeWindow.UnityWebModkit = n,window.UnityWebModkit = n' | Set-Content -Path ./dist/*.js\"",
+    "mybuild": "rm -rf dist && tsc && webpack && sed -i 's/window.UnityWebModkit=n/if (!unsafeWindow?.UnityWebModkit)unsafeWindow.UnityWebModkit = n,window.UnityWebModkit = n/g' dist/*.js"
   },
   "files": [
     "lib"

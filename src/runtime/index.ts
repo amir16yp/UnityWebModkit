@@ -232,6 +232,7 @@ export class Runtime {
       );
       return Promise.reject();
     }
+    this.logger.debug("handling buffer ig");
     return this.handleBuffer(bufferSource, importObject);
   }
 
@@ -254,9 +255,10 @@ export class Runtime {
         wailPreparser._optionalSectionFlags |= 1 << SECTION_ELEMENT;
         wailPreparser._optionalSectionFlags |= 1 << SECTION_TYPE;
         wailPreparser.parse();
-        this.resolveIl2CppFunctions(importObject);
+        this.logger.debug("At initial resolve call importobj.a is " + importObject.a);
+        // this.resolveIl2CppFunctions(importObject);
         const wail = new WailParser(bufferUint8Array);
-        this.exportIl2CppFunctions(wail);
+        // this.exportIl2CppFunctions(wail);
         this.logger.message("Chainloader initialized");
         this.logger.info("%d plugin(s) to load", this.plugins.length);
         const replacementFuncIndexes: WailVariable[] = [];
@@ -283,13 +285,16 @@ export class Runtime {
               useHook.typeName + "xx" + useHook.methodName + makeId(8);
             let injectFunc = null;
             if (!useHook.kind) {
-              injectFunc = (...args: number[]) => {
+              injectFunc = async (...args: number[]) => {
                 // @ts-ignore
-                const _game = window.game || game;
+                await waitFor(() => window.unityInstance)
+                
+                // @ts-ignore
+                const _game = window.unityInstance;
                 const tableName: string =
                   this.tableName ||
-                  this.resolveTableName(_game.instance.Module.asm);
-                const originalFunction = _game.instance.Module.asm[
+                  this.resolveTableName(_game.Module.asm);
+                const originalFunction = _game.Module.asm[
                   tableName
                 ].get(useHook.tableIndex);
                 if (!useHook.enabled) {
@@ -313,13 +318,16 @@ export class Runtime {
                 }
               };
             } else {
-              injectFunc = (...args: number[]) => {
+              injectFunc = async (...args: number[]) => {
                 // @ts-ignore
-                const _game = window.game || game;
+                await waitFor(() => window.unityInstance)
+                
+                // @ts-ignore
+                const _game = window.unityInstance || game;
                 const tableName: string =
                   this.tableName ||
-                  this.resolveTableName(_game.instance.Module.asm);
-                const originalFunction = _game.instance.Module.asm[
+                  this.resolveTableName(_game.Module.asm);
+                const originalFunction = _game.Module.asm[
                   tableName
                 ].get(useHook.tableIndex);
                 let originalResult = originalFunction(...args);
@@ -332,6 +340,7 @@ export class Runtime {
                 return originalResult?.val();
               };
             }
+            importObject.a = importObject.a || {};
             importObject.a[injectName] = injectFunc;
             const injectType = this.internalWasmTypes.findIndex(
               (type: any) =>
@@ -353,6 +362,9 @@ export class Runtime {
           if (usePlugin.onLoaded) usePlugin.onLoaded();
           ++i;
         }
+        this.logger.debug("after plugin loading importobj.a is " + importObject.a);
+        this.resolveIl2CppFunctions(importObject);
+        this.exportIl2CppFunctions(wail);
         wail.addInstructionParser(OP_CALL, (instrBytes: any) => {
           const mappedOldFuncIndexes = oldFuncIndexes.map((item) => item.i32());
           const reader = new BufferReader(instrBytes);
@@ -370,6 +382,7 @@ export class Runtime {
           return instrBytes;
         });
         wail.parse();
+        this.logger.debug("after wail parse importobj.a is " + importObject.a);
         WebAssembly.instantiate(wail.write(), importObject).then(
           (instantiatedSource) => {
             // Fallback for hooking functions that are invoked indirectly
@@ -386,7 +399,7 @@ export class Runtime {
               ].get(hook.tableIndex);
               const hookResults = hook.returnType ? [hook.returnType] : [];
               let injectFunc = null;
-              if (!hook.kind) {
+              if (!hook.kind) { // PREFIX
                 // @ts-ignore
                 injectFunc = new WebAssembly.Function(
                   {
@@ -415,7 +428,7 @@ export class Runtime {
                     }
                   },
                 );
-              } else {
+              } else { // POSTFIX
                 // @ts-ignore
                 injectFunc = new WebAssembly.Function(
                   {
@@ -447,6 +460,7 @@ export class Runtime {
             resolve(instantiatedSource);
           },
         );
+        this.logger.debug("at end of handle buffer importobj.a is " + importObject.a);
       },
     );
   }
@@ -466,17 +480,20 @@ export class Runtime {
     this.saveIl2CppContext();
   }
 
-  private resolveIl2CppFunctions(importObject: WebAssembly.Imports) {
-    const il2CppStringNew = this.internalWasmCode.find((func: any) => {
-      return uint8ArrayStartsWith(
-        concatenateUint8Arrays(func.instructions),
-        [35, 0, 65, 16, 107, 34, 2, 36, 0, 32, 2, 32, 0, 32, 1, 16],
-      );
-    });
+  // public for debugging purposes
+  public resolveIl2CppFunctions(importObject: WebAssembly.Imports) {
+    // const il2CppStringNew = this.internalWasmCode.find((func: any) => {
+    //   return uint8ArrayStartsWith(
+    //     concatenateUint8Arrays(func.instructions),
+    //     [35, 0, 65, 16, 107, 34, 2, 36, 0, 32, 2, 32, 0, 32, 1, 16],
+    //   );
+    // });
+    // COMMENTED BECAUSE importObject.a is undefined (this is ran before the plugin loading so idk mannn)
+    // ignore the above but its fine i think adsffdxc
     const importObjectSize = Object.keys(importObject.a).length;
-    this.resolvedIl2CppFunctions["il2cpp_string_new"] =
-      il2CppStringNew.preservedIndex + importObjectSize;
-    // TODO: This is a hack, but seems to work consistently with Unity 2021.3.15f1
+    // this.resolvedIl2CppFunctions["il2cpp_string_new"] =
+    //   il2CppStringNew.preservedIndex + importObjectSize;
+    // TODO: This is a hack, but seems to work consistently with Unity 2021.3.15f1 (hopefully 2023 too)
     this.resolvedIl2CppFunctions["il2cpp_object_new"] = importObjectSize + 3;
   }
 
@@ -499,9 +516,9 @@ export class Runtime {
 
   public createObject(typeInfo: number | ValueWrapper): number {
     // @ts-ignore
-    const _game = window.game || game;
+    const _game = window.unityInstance || game;
     console.log("creating object with typeinfo", typeInfo);
-    const result = _game.instance.Module.asm.il2cpp_object_new(
+    const result = _game.Module.asm.il2cpp_object_new(
       typeInfo instanceof ValueWrapper ? typeInfo.val() : typeInfo,
     );
     console.log("created object result at", result);
@@ -510,33 +527,33 @@ export class Runtime {
 
   public createMstr(char: string): number {
     // @ts-ignore
-    const _game = window.game || game;
-    const charAlloc = _game.instance.Module._malloc(char.length);
+    const _game = window.unityInstance || game;
+    const charAlloc = _game.Module._malloc(char.length);
     writeUint8ArrayAtOffset(
-      _game.instance.Module.HEAPU8,
+      _game.Module.HEAPU8,
       new TextEncoder().encode(char),
       charAlloc,
     );
-    return _game.instance.Module.asm.il2cpp_string_new(charAlloc, char.length);
+    return _game.Module.asm.il2cpp_string_new(charAlloc, char.length);
   }
 
   public memory(address: number | ValueWrapper, size: number): Uint8Array {
     // @ts-ignore
-    const _game = window.game || game;
+    const _game = window.unityInstance || game;
     if (address instanceof ValueWrapper) address = address.val();
-    return _game.instance.Module.HEAPU8.slice(address, address + size);
+    return _game.Module.HEAPU8.slice(address, address + size);
   }
 
   public malloc(size: number): number {
     // @ts-ignore
-    const _game = window.game || game;
-    return _game.instance.Module._malloc(size);
+    const _game = window.unityInstance || game;
+    return _game.Module._malloc(size);
   }
 
   public free(block: number | ValueWrapper) {
     // @ts-ignore
-    const _game = window.game || game;
-    _game.instance.Module._free(
+    const _game = window.unityInstance || game;
+    _game.Module._free(
       block instanceof ValueWrapper ? block.val() : block,
     );
   }
@@ -672,10 +689,10 @@ class ModkitPlugin {
     args?: any[],
   ) {
     // @ts-ignore
-    const _game = window.game || game;
+    const _game = window.unityInstance || game;
     const tableName: string =
       this._runtime.tableName ||
-      this._runtime.resolveTableName(_game.instance.Module.asm);
+      this._runtime.resolveTableName(_game.Module.asm);
     if (typeof targetMethodOrArgs === "string") {
       const tableIndex = this._runtime.getTableIndex(
         target,
@@ -691,7 +708,7 @@ class ModkitPlugin {
         args = args.map((arg) =>
           arg instanceof ValueWrapper ? arg.val() : arg,
         );
-      const result = _game.instance.Module.asm[tableName].get(tableIndex)(
+      const result = _game.Module.asm[tableName].get(tableIndex)(
         ...(args as any[]),
       );
       return new ValueWrapper(result);
@@ -711,7 +728,7 @@ class ModkitPlugin {
       targetMethodOrArgs = targetMethodOrArgs.map((arg) =>
         arg instanceof ValueWrapper ? arg.val() : arg,
       );
-      const result = _game.instance.Module.asm[tableName].get(tableIndex)(
+      const result = _game.Module.asm[tableName].get(tableIndex)(
         ...(targetMethodOrArgs as any[]),
       );
       return new ValueWrapper(result);
@@ -744,9 +761,9 @@ class ModkitPlugin {
     count: number,
   ) {
     // @ts-ignore
-    const _game = window.game || game;
+    const _game = window.unityInstance || game;
     writeUint8ArrayAtOffset(
-      _game.instance.Module.HEAPU8,
+      _game.Module.HEAPU8,
       this.slice(src, count),
       dest instanceof ValueWrapper ? dest.val() : dest,
     );
@@ -774,24 +791,25 @@ export class ValueWrapper {
 
   public deref(): ValueWrapper | undefined {
     const val = this.readField(0, "u32")?.val();
+    // BUG: 0 is falsy here
     return val ? new ValueWrapper(val) : undefined;
   }
 
   public getClassName(): string | null {
     try {
       // @ts-ignore
-      const _game = window.game || game;
+      const _game = window.unityInstance || game;
       const classPtr = new DataView(
-        _game.instance.Module.HEAPU8.slice(
+        _game.Module.HEAPU8.slice(
           this._result,
           this._result + 4,
         ).buffer,
       ).getUint32(0, true);
       let classNamePtr = new DataView(
-        _game.instance.Module.HEAPU8.slice(classPtr + 8, classPtr + 12).buffer,
+        _game.Module.HEAPU8.slice(classPtr + 8, classPtr + 12).buffer,
       ).getUint32(0, true);
       const classNameReader = new BinaryReader(
-        _game.instance.Module.HEAPU8.slice(
+        _game.Module.HEAPU8.slice(
           classNamePtr,
           classNamePtr + 128, // Assumed max length for a class name
         ).buffer,
@@ -804,9 +822,9 @@ export class ValueWrapper {
 
   public readField(offset: number, type: string) {
     // @ts-ignore
-    const _game = window.game || game;
+    const _game = window.unityInstance || game;
     const valAddress = this._result + offset;
-    let valArray = _game.instance.Module.HEAPU8.slice(
+    let valArray = _game.Module.HEAPU8.slice(
       valAddress,
       valAddress + 4,
     );
@@ -829,7 +847,7 @@ export class ValueWrapper {
     value: ValueWrapper | number,
   ) {
     // @ts-ignore
-    const _game = window.game || game;
+    const _game = window.unityInstance || game;
     let size = dataTypeSizes[type];
     const writer = new BinaryWriter(new ArrayBuffer(size));
     if (value instanceof ValueWrapper) value = value.val();
@@ -848,7 +866,7 @@ export class ValueWrapper {
         break;
     }
     writeUint8ArrayAtOffset(
-      _game.instance.Module.HEAPU8,
+      _game.Module.HEAPU8,
       writer.finalize(),
       this._result + offset,
     );
@@ -856,8 +874,8 @@ export class ValueWrapper {
 
   private static readUtf16Char(ptr: number) {
     // @ts-ignore
-    const _game = window.game || game;
-    let buffer = new Uint16Array(_game.instance.Module.HEAPU8.buffer);
+    const _game = window.unityInstance || game;
+    let buffer = new Uint16Array(_game.Module.HEAPU8.buffer);
     let offset = ptr / 2; // divide by 2 to convert from byte offset to character offset
     let subarray = [];
     let charCode = buffer[offset];

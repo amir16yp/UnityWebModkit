@@ -203,6 +203,7 @@ export function createIl2CppContext(
   metadata: Il2CppMetadata,
   referencedAssemblies?: string[],
 ): Result<Il2CppContext, Il2CppContextCreationError> {
+  console.log("createIl2CppContext")
   const dataSections: WebAssemblyDataSection[] = [];
   const reader = new BinaryReader(buffer);
   reader.seek(8);
@@ -339,6 +340,7 @@ export async function createMetadata(
   buffer: ArrayBuffer,
   referencedAssemblies?: string[],
 ): Promise<Result<Il2CppMetadata, MetadataParsingError>> {
+  console.log("createMetadata");
   const reader = new BinaryReader(buffer);
   const sanity = reader.readUint32();
   if (sanity !== 0xfab11baf)
@@ -368,6 +370,8 @@ export async function createMetadata(
     header.imagesOffset,
     header.imagesSize,
   );
+  console.log("imageDefs length: ", imageDefs.length)
+  console.log(imageDefs);
   const referencedImageDefs = [];
   var i = 0,
     len = imageDefs.length;
@@ -378,6 +382,7 @@ export async function createMetadata(
       header.stringOffset,
       imageDef.nameIndex,
     );
+    console.log("imgname is ", imageName)
     if (referencedAssemblies?.includes(imageName))
       referencedImageDefs.push(imageDef);
     i++;
@@ -534,6 +539,7 @@ function readImageDefinitions(
   offset: number,
   size: number,
 ): Il2CppImageDefinition[] {
+  console.log("readImageDefinitions")
   reader.seek(offset);
   const imageDefinitions = [];
   const imagesEnd = offset + size;

@@ -10,8 +10,9 @@
     "strict": true,
     "resolveJsonModule": true,
     "allowJs": true,
-    "outDir": "lib"
+    "outDir": "lib",
+    "lib": ["es2020", "dom"]
   },
-  "lib": ["es2015"],
+  // "lib": "es2019",
   "include": ["./src/**/*"]
 }
