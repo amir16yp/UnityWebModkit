@@ -255,7 +255,6 @@ export class Runtime {
         wailPreparser._optionalSectionFlags |= 1 << SECTION_ELEMENT;
         wailPreparser._optionalSectionFlags |= 1 << SECTION_TYPE;
         wailPreparser.parse();
-        this.logger.debug("At initial resolve call importobj.a is " + importObject.a);
         // this.resolveIl2CppFunctions(importObject);
         const wail = new WailParser(bufferUint8Array);
         // this.exportIl2CppFunctions(wail);
@@ -340,8 +339,9 @@ export class Runtime {
                 return originalResult?.val();
               };
             }
-            importObject.a = importObject.a || {};
-            importObject.a[injectName] = injectFunc;
+            importObject.env = importObject.env || {};
+            console.log(importObject);
+            importObject.env[injectName] = injectFunc;
             const injectType = this.internalWasmTypes.findIndex(
               (type: any) =>
                 JSON.stringify(type.params) ===
@@ -349,7 +349,7 @@ export class Runtime {
                 type.returnType === useHook.returnType,
             );
             const replacementFuncIndex = wail.addImportEntry({
-              moduleStr: "a",
+              moduleStr: "env",
               fieldStr: injectName,
               kind: "func",
               type: injectType,
@@ -362,7 +362,7 @@ export class Runtime {
           if (usePlugin.onLoaded) usePlugin.onLoaded();
           ++i;
         }
-        this.logger.debug("after plugin loading importobj.a is " + importObject.a);
+        this.logger.debug("after plugin loading importobj.env is", importObject.env);
         this.resolveIl2CppFunctions(importObject);
         this.exportIl2CppFunctions(wail);
         wail.addInstructionParser(OP_CALL, (instrBytes: any) => {
@@ -382,7 +382,7 @@ export class Runtime {
           return instrBytes;
         });
         wail.parse();
-        this.logger.debug("after wail parse importobj.a is " + importObject.a);
+        this.logger.debug("after wail parse importobj.env is", importObject.env);
         WebAssembly.instantiate(wail.write(), importObject).then(
           (instantiatedSource) => {
             // Fallback for hooking functions that are invoked indirectly
@@ -460,7 +460,7 @@ export class Runtime {
             resolve(instantiatedSource);
           },
         );
-        this.logger.debug("at end of handle buffer importobj.a is " + importObject.a);
+        this.logger.debug("at end of handle buffer importobj.env is", importObject.env);
       },
     );
   }
@@ -488,11 +488,11 @@ export class Runtime {
     //     [35, 0, 65, 16, 107, 34, 2, 36, 0, 32, 2, 32, 0, 32, 1, 16],
     //   );
     // });
-    // COMMENTED BECAUSE importObject.a is undefined (this is ran before the plugin loading so idk mannn)
+    // COMMENTED BECAUSE importObject.env is undefined (this is ran before the plugin loading so idk mannn)
     // ignore the above but its fine i think adsffdxc
-    const importObjectSize = Object.keys(importObject.a).length;
+    const importObjectSize = Object.keys(importObject.env).length;
     // this.resolvedIl2CppFunctions["il2cpp_string_new"] =
-    //   il2CppStringNew.preservedIndex + importObjectSize;
+    //   il2CppStringNew?.preservedIndex + importObjectSize;
     // TODO: This is a hack, but seems to work consistently with Unity 2021.3.15f1 (hopefully 2023 too)
     this.resolvedIl2CppFunctions["il2cpp_object_new"] = importObjectSize + 3;
   }
