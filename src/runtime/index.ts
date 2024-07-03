@@ -136,6 +136,9 @@ export class Runtime {
 
   private readGlobalMetadataFromStorage(webData: WebData): Promise<void> {
     return new Promise<void>((resolve, reject) => {
+      // short circuit
+      reject();
+      return;
       indexedDB.databases().then(async (databases) => {
         const uwmStore = databases.findIndex(
           (d) => d.name === "UnityWebModkit",
@@ -161,6 +164,7 @@ export class Runtime {
               (plugin) => plugin.referencedAssemblies,
             );
             const globalMetadata = metadataRequest.result;
+            this.logger.message(globalMetadata);
             if (
               JSON.stringify(this.allReferencedAssemblies.sort()) !==
               JSON.stringify(globalMetadata.referencedAssemblies.sort())
@@ -243,9 +247,11 @@ export class Runtime {
     return new Promise<WebAssembly.WebAssemblyInstantiatedSource>(
       async (resolve, reject) => {
         if (!importObject) importObject = {};
-        await this.readIl2CppContextFromStorage();
+        // await this.readIl2CppContextFromStorage();
         if (!this.il2CppContext) this.searchWasmBinary(bufferSource);
         if (!this.il2CppContext) {
+          this.logger.warn("no ctx - uh oh...")
+          debugger;
           reject();
           return;
         }
@@ -482,19 +488,11 @@ export class Runtime {
 
   // public for debugging purposes
   public resolveIl2CppFunctions(importObject: WebAssembly.Imports) {
-    // const il2CppStringNew = this.internalWasmCode.find((func: any) => {
-    //   return uint8ArrayStartsWith(
-    //     concatenateUint8Arrays(func.instructions),
-    //     [35, 0, 65, 16, 107, 34, 2, 36, 0, 32, 2, 32, 0, 32, 1, 16],
-    //   );
-    // });
-    // COMMENTED BECAUSE importObject.env is undefined (this is ran before the plugin loading so idk mannn)
-    // ignore the above but its fine i think adsffdxc
-    const importObjectSize = Object.keys(importObject.env).length;
-    // this.resolvedIl2CppFunctions["il2cpp_string_new"] =
-    //   il2CppStringNew?.preservedIndex + importObjectSize;
+    const il2CppStringNew = 2169; // dev5 only (gone lol)
+    this.resolvedIl2CppFunctions["il2cpp_string_new"] = 2169;
     // TODO: This is a hack, but seems to work consistently with Unity 2021.3.15f1 (hopefully 2023 too)
-    this.resolvedIl2CppFunctions["il2cpp_object_new"] = importObjectSize + 3;
+    this.resolvedIl2CppFunctions["il2cpp_object_new"] = 2158;
+    this.logger.info("resolved funcs i hope")
   }
 
   private exportIl2CppFunctions(wail: WailParser) {
@@ -505,6 +503,7 @@ export class Runtime {
         kind: "func",
       });
     }
+    this.logger.info("Exported %d Il2Cpp functions", Object.keys(this.resolvedIl2CppFunctions).length);
   }
 
   public resolveTableName(asm: any) {
@@ -528,14 +527,15 @@ export class Runtime {
   public createMstr(char: string): number {
     // @ts-ignore
     const _game = window.unityInstance || game;
-    const charAlloc = _game.Module._malloc(char.length);
+    const charAlloc = this.malloc(char.length);
     writeUint8ArrayAtOffset(
       _game.Module.HEAPU8,
       new TextEncoder().encode(char),
       charAlloc,
     );
+    // mscorlib needs to be referenced when this is called
     return _game.Module.asm.il2cpp_string_new(charAlloc, char.length);
-  }
+  } 
 
   public memory(address: number | ValueWrapper, size: number): Uint8Array {
     // @ts-ignore
@@ -547,7 +547,7 @@ export class Runtime {
   public malloc(size: number): number {
     // @ts-ignore
     const _game = window.unityInstance || game;
-    return _game.Module._malloc(size);
+    return _game.Module.asm.malloc(size);
   }
 
   public free(block: number | ValueWrapper) {
@@ -681,8 +681,8 @@ class ModkitPlugin {
     return hook;
   }
 
-  public call(target: string, args: any[]): void;
-  public call(targetClass: string, targetMethod: string, args: any[]): void;
+  // public call(target: string, args: any[]): void;
+  // public call(targetClass: string, targetMethod: string, args: any[]): void;
   public call(
     target: string,
     targetMethodOrArgs?: string | any[],
@@ -740,7 +740,20 @@ class ModkitPlugin {
   }
 
   public createMstr(char: string): ValueWrapper {
-    return new ValueWrapper(this._runtime.createMstr(char));
+    // @ts-ignore
+    const _game = window.unityInstance || game;
+    const charArray = new TextEncoder().encode(char);
+    const nullTerminatedArray = new Uint8Array(charArray.length + 1);
+    nullTerminatedArray.set(charArray);
+    nullTerminatedArray[charArray.length] = 0;
+    const charAlloc = this._runtime.malloc(nullTerminatedArray.length);
+    writeUint8ArrayAtOffset(
+      _game.Module.HEAPU8,
+      nullTerminatedArray,
+      charAlloc,
+    );
+    const res = this.call("System.Runtime.InteropServices.Marshal", "PtrToStringAnsi", [charAlloc]) as ValueWrapper;
+    return res;
   }
 
   public slice(address: ValueWrapper | number, size: number = 256): Uint8Array {
@@ -885,7 +898,7 @@ export class ValueWrapper {
       offset++;
       charCode = buffer[offset];
     }
-
+    // subarray.pop(); // remove the weird stuff that happens at the end (hopefully works lol)
     let decoder = new TextDecoder("utf-16le");
     return decoder.decode(new Uint16Array(subarray));
   }

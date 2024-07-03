@@ -203,7 +203,7 @@ export function createIl2CppContext(
   metadata: Il2CppMetadata,
   referencedAssemblies?: string[],
 ): Result<Il2CppContext, Il2CppContextCreationError> {
-  console.log("createIl2CppContext")
+  console.log("createIl2CppContext");
   const dataSections: WebAssemblyDataSection[] = [];
   const reader = new BinaryReader(buffer);
   reader.seek(8);

@@ -30,19 +30,21 @@ export const SECTION_ELEMENT = 9;
 export const SECTION_CODE = 10;
 const SECTION_DATA = 11;
 const SECTION_DATACOUNT = 12;
-
-const MAX_SECTION_ID = 12;
+const SECTION_TAG = 13;
+const MAX_SECTION_ID = 13;
 
 const KIND_FUNC = 0x00;
 const KIND_TABLE = 0x01;
 const KIND_MEMORY = 0x02;
 const KIND_GLOBAL = 0x03;
+const KIND_TAG = 0x04;
 
 const kindStr = {
   func: KIND_FUNC,
   table: KIND_TABLE,
   memory: KIND_MEMORY,
   global: KIND_GLOBAL,
+  tag: KIND_TAG
 };
 // inverse
 Object.entries(kindStr).forEach(([str, code]) => (kindStr[code] = str));
@@ -95,6 +97,8 @@ const OP_BLOCK = 0x02;
 const OP_LOOP = 0x03;
 const OP_IF = 0x04;
 const OP_ELSE = 0x05;
+const OP_THROW = 0x08
+const OP_THROW_REF = 0x0a
 const OP_END = 0x0b;
 const OP_BR = 0x0c;
 const OP_BR_IF = 0x0d;
@@ -104,6 +108,7 @@ export const OP_CALL = 0x10;
 const OP_CALL_INDIRECT = 0x11;
 const OP_DROP = 0x1a;
 const OP_SELECT = 0x1b;
+const OP_TRY_TABLE = 0x1f;
 const OP_GET_LOCAL = 0x20;
 const OP_SET_LOCAL = 0x21;
 const OP_TEE_LOCAL = 0x22;
@@ -1070,10 +1075,12 @@ export class WailParser extends BufferReader {
     }
 
     // TODO How do we make this less stupid?
+    console.log(`buflen is ${this.inBuffer.length}`);
     while (this.inPos < this.inBuffer.length) {
+      console.log("doing " + this.inPos);
       this._readSection();
     }
-
+    console.log("committing bytes!!");
     this.commitBytes();
 
     this._finished = true;
@@ -1916,7 +1923,7 @@ export class WailParser extends BufferReader {
     // The DataCount section violates the usual rule that non-custom sections must occur in
     // numeric order. As a result, we must not assume a section is missing just because we have
     // encountered the DataCount section
-    if (id != SECTION_DATACOUNT) {
+    if (id != SECTION_DATACOUNT || id != SECTION_TAG) {
       // At this point we want to check if a required section does not exist
       // If so, we want to add an empty version of that section and add any new
       // elements to it
@@ -3121,8 +3128,12 @@ export class WailParser extends BufferReader {
       populateThisTimeOnly = true;
       window.UnityWebModkit.Runtime.internalWasmCode = [];
     }
-
+    console.profile("code section parsing aa");
     for (let i = 0; i < oldCount; i++) {
+      if (i % 5000 == 0 && i != 0) {
+        console.log("Parsing function " + i + " of " + oldCount);
+        console.profileEnd("code section parsing aa");
+      }
       const funcIndex = this._getAdjustedFunctionIndex(
         this._importFuncCount + i,
       );

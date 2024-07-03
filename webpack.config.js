@@ -5,6 +5,7 @@ const { version } = require("./package.json");
 module.exports = {
   entry: "./src/mod.ts",
   mode: "development",
+  devtool: false,
   module: {
     rules: [
       {
