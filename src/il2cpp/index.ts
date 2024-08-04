@@ -358,7 +358,7 @@ export async function createMetadata(
       ),
     );
   // TODO: Support more metadata versions
-  if (version !== 29 || version !== 31)
+  if (version !== 31)
     return err(
       new MetadataParsingError(
         `Metadata file supplied is not a supported version [${version}].`,
