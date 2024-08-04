@@ -142,6 +142,7 @@ type Il2CppMethodDefinition = {
   nameIndex: number;
   declaringType: number;
   returnType: number;
+  returnParameterToken?: number;
   parameterStart: number;
   genericContainerIndex: number;
   token: number;
@@ -357,7 +358,7 @@ export async function createMetadata(
       ),
     );
   // TODO: Support more metadata versions
-  if (version !== 29)
+  if (version !== 29 || version !== 31)
     return err(
       new MetadataParsingError(
         `Metadata file supplied is not a supported version [${version}].`,
@@ -623,6 +624,7 @@ function readMethodDefinitions(
       nameIndex: reader.readUint32(),
       declaringType: reader.readInt32(),
       returnType: reader.readInt32(),
+      returnParameterToken: reader.readInt32(),
       parameterStart: reader.readInt32(),
       genericContainerIndex: reader.readInt32(),
       token: reader.readUint32(),
