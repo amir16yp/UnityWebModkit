@@ -4,6 +4,9 @@ import { Il2CppContextCreationError, MetadataParsingError } from "../errors";
 import { patternSearch, bufToHex } from "../utils";
 
 const SUPPORTED_METADATA_VERSIONS = new Set([24, 31]);
+const MAX_REASONABLE_REGISTRATION_COUNT = 0x35000;
+const CODE_REGISTRATION_BACKTRACK_WORD_CANDIDATES = [14, 13, 12, 11];
+const CODE_REGISTRATION_SHIFT_CANDIDATES = [0, -4, -8, -12];
 
 export type Il2CppMetadata = {
   buffer: ArrayBuffer;
@@ -11,6 +14,7 @@ export type Il2CppMetadata = {
   integrityHash: string;
   referencedAssemblies?: string[];
   typeToAssembly: Record<string, string>;
+  typeNamesByIndex: Record<number, string>;
   imageDefs: Il2CppImageDefinition[];
   typeDefs: Il2CppTypeDefinition[];
   methodDefs: Il2CppMethodDefinition[];
@@ -184,7 +188,20 @@ export type Il2CppContext = {
   codeGenModules: Il2CppCodeGenModuleCollection;
   codeGenModuleMethodPointers: Il2CppCodeGenModuleMethodPointers;
   scriptData: Il2CppScriptData;
+  discoveredFunctions: Il2CppDiscoveredFunction[];
   name: string;
+};
+
+export type Il2CppDiscoveredFunction = {
+  assemblyName: string;
+  moduleName: string;
+  typeName: string;
+  methodName: string;
+  qualifiedName: string;
+  pointer: number;
+  parameterCount: number;
+  token: number;
+  methodIndex: number;
 };
 
 type Il2CppCodeGenModule = {
@@ -200,11 +217,11 @@ type Il2CppCodeGenModule = {
   rgctxRanges: number;
   rgctxsCount: number;
   rgctxs: number;
-  debuggerMetadata: number;
-  moduleInitializer: number;
-  staticConstructorTypeIndices: number;
-  metadataRegistration: number;
-  codeRegistration: number;
+  debuggerMetadata?: number;
+  moduleInitializer?: number;
+  staticConstructorTypeIndices?: number;
+  metadataRegistration?: number;
+  codeRegistration?: number;
 };
 
 type Il2CppCodeGenModuleCollection = {
@@ -220,6 +237,10 @@ type Il2CppScriptData = {
     [methodName: string]: number;
   };
 };
+
+function getMethodKey(methodName: string, methodIndex: number) {
+  return `${methodName}#${methodIndex}`;
+}
 
 type WebAssemblyDataSection = {
   index: number;
@@ -282,6 +303,9 @@ export function createIl2CppContext(
   const pCodeRegistration = readCodeRegistration(
     memoryReader,
     codeRegistration,
+    buffer.byteLength,
+    metadata.originalImageDefCount,
+    metadata.originalMethodDefCount,
   );
   const pCodeGenModules = readCodeGenModules(
     memoryReader,
@@ -290,6 +314,8 @@ export function createIl2CppContext(
   );
   const codeGenModules: Il2CppCodeGenModuleCollection = {};
   const codeGenModuleMethodPointers: Il2CppCodeGenModuleMethodPointers = {};
+  const scriptData: Il2CppScriptData = {};
+  const discoveredFunctions: Il2CppDiscoveredFunction[] = [];
   console.log("\n========== CODEGEN MODULES ==========");
   for (let i = 0; i < pCodeGenModules.length; i++) {
     const pCodeGenModule = readCodeGenModule(memoryReader, pCodeGenModules[i]);
@@ -306,12 +332,40 @@ export function createIl2CppContext(
       pCodeGenModule.methodPointerCount,
     );
     codeGenModuleMethodPointers[moduleName] = methodPointers;
+    const assemblyName = normalizeAssemblyName(moduleName);
+    const assemblyMethodDefs = metadata.methodDefs.filter((methodDef) => {
+      const typeName = metadata.typeNamesByIndex[methodDef.declaringType];
+      return typeName && metadata.typeToAssembly[typeName] === assemblyName;
+    });
+    const methodCount = Math.min(methodPointers.length, assemblyMethodDefs.length);
+    for (let methodIndex = 0; methodIndex < methodCount; methodIndex++) {
+      const methodDef = assemblyMethodDefs[methodIndex];
+      const typeName = metadata.typeNamesByIndex[methodDef.declaringType] || `<type:${methodDef.declaringType}>`;
+      const methodName = getStringFromIndex(memoryReader, metadata.header.stringOffset, methodDef.nameIndex);
+      const pointer = methodPointers[methodIndex];
+      if (!scriptData[typeName]) {
+        scriptData[typeName] = {};
+      }
+      scriptData[typeName][getMethodKey(methodName, methodDef.methodIndex ?? methodIndex)] = pointer;
+      discoveredFunctions.push({
+        assemblyName,
+        moduleName,
+        typeName,
+        methodName,
+        qualifiedName: `${typeName}.${methodName}`,
+        pointer,
+        parameterCount: methodDef.parameterCount,
+        token: methodDef.token,
+        methodIndex: methodDef.methodIndex ?? methodIndex,
+      });
+    }
   }
   console.log("=====================================\n");
   return ok({
     codeGenModules,
     codeGenModuleMethodPointers,
-    scriptData: {},
+    scriptData,
+    discoveredFunctions,
     name: "il2cpp",
   });
 }
@@ -445,6 +499,7 @@ async function createMetadataFromSupportedVersion(
   const referencedAssemblySet = new Set(referencedAssemblies || []);
   const typeIndexToAssembly: Record<number, string> = {};
   const typeToAssembly: Record<string, string> = {};
+  const typeNamesByIndex: Record<number, string> = {};
   let i = 0;
   let len = imageDefs.length;
   while (i < len) {
@@ -489,6 +544,7 @@ async function createMetadataFromSupportedVersion(
     );
     const fullName = namespaceName ? `${namespaceName}.${typeName}` : typeName;
     typeToAssembly[fullName] = typeIndexToAssembly[typeDef.typeIndex!] || "";
+    typeNamesByIndex[typeDef.typeIndex!] = fullName;
     console.log(`[${idx}] ${fullName} (methods: ${typeDef.method_count}, fields: ${typeDef.field_count})`);
   });
   console.log("================================================\n");
@@ -531,6 +587,7 @@ async function createMetadataFromSupportedVersion(
     buffer,
     header,
     typeToAssembly,
+    typeNamesByIndex,
     imageDefs: referencedImageDefs,
     typeDefs,
     methodDefs: referencedMethodDefs,
@@ -776,7 +833,35 @@ function readMethodDefinitions(
   return methodDefinitions;
 }
 
-function readCodeRegistration(reader: BinaryReader, offset: number) {
+function readCodeRegistration(
+  reader: BinaryReader,
+  offset: number,
+  bufferLength: number,
+  imageCount: number,
+  methodCount: number,
+) {
+  const candidates = CODE_REGISTRATION_SHIFT_CANDIDATES.map((shift) => {
+    const candidateOffset = offset + shift;
+    return {
+      offset: candidateOffset,
+      registration: readCodeRegistrationCandidate(reader, candidateOffset),
+    };
+  });
+  const validCandidate = candidates.find((candidate) =>
+    isLikelyCodeRegistration(
+      candidate.registration,
+      bufferLength,
+      imageCount,
+      methodCount,
+    ),
+  );
+  if (validCandidate) {
+    return validCandidate.registration;
+  }
+  return readCodeRegistrationCandidate(reader, offset);
+}
+
+function readCodeRegistrationCandidate(reader: BinaryReader, offset: number) {
   reader.seek(offset);
   return {
     reversePInvokeWrapperCount: reader.readUint32(),
@@ -795,6 +880,50 @@ function readCodeRegistration(reader: BinaryReader, offset: number) {
     codeGenModulesCount: reader.readUint32(),
     codeGenModules: reader.readUint32(),
   };
+}
+
+function isReasonableCount(value: number, max: number): boolean {
+  return Number.isInteger(value) && value >= 0 && value <= max;
+}
+
+function isReasonablePointer(value: number, bufferLength: number): boolean {
+  return Number.isInteger(value) && value >= 0 && value < bufferLength;
+}
+
+function isLikelyCodeRegistration(
+  registration: ReturnType<typeof readCodeRegistrationCandidate>,
+  bufferLength: number,
+  imageCount: number,
+  methodCount: number,
+): boolean {
+  if (!isReasonableCount(registration.codeGenModulesCount, Math.max(imageCount + 32, 512))) {
+    return false;
+  }
+  if (registration.codeGenModulesCount < Math.max(1, imageCount - 4)) {
+    return false;
+  }
+  if (!isReasonablePointer(registration.codeGenModules, bufferLength)) {
+    return false;
+  }
+  if (!isReasonableCount(registration.genericMethodPointersCount, Math.max(methodCount * 2, MAX_REASONABLE_REGISTRATION_COUNT))) {
+    return false;
+  }
+  if (!isReasonableCount(registration.invokerPointersCount, Math.max(methodCount * 2, MAX_REASONABLE_REGISTRATION_COUNT))) {
+    return false;
+  }
+  if (!isReasonableCount(registration.reversePInvokeWrapperCount, MAX_REASONABLE_REGISTRATION_COUNT)) {
+    return false;
+  }
+  if (!isReasonableCount(registration.unresolvedVirtualCallCount, MAX_REASONABLE_REGISTRATION_COUNT)) {
+    return false;
+  }
+  if (!isReasonableCount(registration.interopDataCount, MAX_REASONABLE_REGISTRATION_COUNT)) {
+    return false;
+  }
+  if (!isReasonableCount(registration.windowsRuntimeFactoryCount, MAX_REASONABLE_REGISTRATION_COUNT)) {
+    return false;
+  }
+  return true;
 }
 
 function readCodeGenModules(
@@ -828,11 +957,6 @@ function readCodeGenModule(
     rgctxRanges: reader.readUint32(),
     rgctxsCount: reader.readInt32(),
     rgctxs: reader.readUint32(),
-    debuggerMetadata: reader.readUint32(),
-    moduleInitializer: reader.readUint32(),
-    staticConstructorTypeIndices: reader.readUint32(),
-    metadataRegistration: reader.readUint32(),
-    codeRegistration: reader.readUint32(),
   };
 }
 
@@ -939,7 +1063,12 @@ class SectionHelper {
                 const refva3 = refva3s[n];
                 this.memoryReader.seek(refva3 - 4);
                 if (this.memoryReader.readInt32() === this.imageCount) {
-                  return refva3 - 4 * 14;
+                  for (const backtrackWords of CODE_REGISTRATION_BACKTRACK_WORD_CANDIDATES) {
+                    const candidate = refva3 - 4 * backtrackWords;
+                    if (candidate >= 0) {
+                      return candidate;
+                    }
+                  }
                 }
               }
             }
