@@ -804,6 +804,18 @@ var __awaiter = (undefined && undefined.__awaiter) || function (thisArg, _argume
 
 
 const SUPPORTED_METADATA_VERSIONS = new Set([24, 31]);
+function hasCustomAttributeIndexInTypeDefinition(version) {
+    return version <= 24;
+}
+function hasRGCTXInTypeDefinition(version) {
+    return version <= 24.1;
+}
+function hasCustomAttributeIndexInMethodDefinition(version) {
+    return version <= 24;
+}
+function hasLegacyMethodMetadataFields(version) {
+    return version <= 24.1;
+}
 function createIl2CppContext(buffer, metadata, referencedAssemblies) {
     console.log("createIl2CppContext");
     const dataSections = [];
@@ -916,13 +928,11 @@ function getStringFromIndex(reader, base, offset) {
     reader.seek(base + offset);
     return reader.readNullTerminatedUTF8String();
 }
-function isReferencedType(imageDefinitions, typeDefinitionsOffset, readerOffset) {
-    const typeDefStructSize = 88;
+function isReferencedTypeIndex(imageDefinitions, typeIndex) {
     for (const imageDef of imageDefinitions) {
-        let typeStart = imageDef.typeStart * typeDefStructSize + typeDefinitionsOffset;
-        let typeCount = imageDef.typeCount * typeDefStructSize;
-        let typeEnd = typeStart + typeCount;
-        if (readerOffset >= typeStart && readerOffset < typeEnd) {
+        const typeStart = imageDef.typeStart;
+        const typeEnd = typeStart + imageDef.typeCount;
+        if (typeIndex >= typeStart && typeIndex < typeEnd) {
             return true;
         }
     }
@@ -952,7 +962,7 @@ function createMetadataFromSupportedVersion(reader, buffer, version, referencedA
         }
         console.log(`Referenced assemblies: ${referencedImageDefs.length}`);
         console.log("=========================================\n");
-        const typeDefs = readTypeDefinitions(reader, header.typeDefinitionsOffset, header.typeDefinitionsSize, referencedImageDefs);
+        const typeDefs = readTypeDefinitions(reader, header.typeDefinitionsOffset, header.typeDefinitionsSize, referencedImageDefs, version);
         console.log("\n========== EXTRACTED TYPE DEFINITIONS ==========");
         console.log(`Total types extracted: ${typeDefs.length}`);
         typeDefs.forEach((typeDef, idx) => {
@@ -962,7 +972,7 @@ function createMetadataFromSupportedVersion(reader, buffer, version, referencedA
             console.log(`[${idx}] ${fullName} (methods: ${typeDef.method_count}, fields: ${typeDef.field_count})`);
         });
         console.log("================================================\n");
-        const methodDefs = readMethodDefinitions(reader, header.methodsOffset, header.methodsSize);
+        const methodDefs = readMethodDefinitions(reader, header.methodsOffset, header.methodsSize, version);
         const referencedMethodDefs = [];
         i = 0;
         len = methodDefs.length;
@@ -1098,23 +1108,40 @@ function readImageDefinitions(reader, offset, size) {
     }
     return imageDefinitions;
 }
-function readTypeDefinitions(reader, offset, size, imageDefinitions) {
+function readTypeDefinitions(reader, offset, size, imageDefinitions, version) {
     reader.seek(offset);
     const typeDefinitions = [];
     const typesEnd = offset + size;
     let i = 0;
     while (reader.offset < typesEnd) {
+        const nameIndex = reader.readUint32();
+        const namespaceIndex = reader.readUint32();
+        const customAttributeIndex = hasCustomAttributeIndexInTypeDefinition(version)
+            ? reader.readInt32()
+            : -1;
+        const byvalTypeIndex = reader.readInt32();
+        const byrefTypeIndex = version <= 24.5 ? reader.readInt32() : -1;
+        const declaringTypeIndex = reader.readInt32();
+        const parentIndex = reader.readInt32();
+        const elementTypeIndex = reader.readInt32();
+        const rgctxStartIndex = hasRGCTXInTypeDefinition(version)
+            ? reader.readInt32()
+            : -1;
+        const rgctxCount = hasRGCTXInTypeDefinition(version)
+            ? reader.readInt32()
+            : 0;
+        const genericContainerIndex = reader.readInt32();
         const typeDef = {
             typeIndex: i,
-            nameIndex: reader.readUint32(),
-            namespaceIndex: reader.readUint32(),
-            customAttributeIndex: reader.readInt32(),
-            byvalTypeIndex: reader.readInt32(),
-            byrefTypeIndex: reader.readInt32(),
-            declaringTypeIndex: reader.readInt32(),
-            parentIndex: reader.readInt32(),
-            elementTypeIndex: reader.readInt32(),
-            genericContainerIndex: reader.readInt32(),
+            nameIndex,
+            namespaceIndex,
+            customAttributeIndex,
+            byvalTypeIndex,
+            byrefTypeIndex,
+            declaringTypeIndex,
+            parentIndex,
+            elementTypeIndex,
+            genericContainerIndex,
             flags: reader.readUint32(),
             fieldStart: reader.readInt32(),
             methodStart: reader.readInt32(),
@@ -1124,8 +1151,8 @@ function readTypeDefinitions(reader, offset, size, imageDefinitions) {
             interfacesStart: reader.readInt32(),
             vtableStart: reader.readInt32(),
             interfaceOffsetsStart: reader.readInt32(),
-            rgctxStartIndex: reader.readInt32(),
-            rgctxCount: reader.readInt32(),
+            rgctxStartIndex,
+            rgctxCount,
             method_count: reader.readUint16(),
             property_count: reader.readUint16(),
             field_count: reader.readUint16(),
@@ -1138,31 +1165,54 @@ function readTypeDefinitions(reader, offset, size, imageDefinitions) {
             token: reader.readUint32(),
         };
         i++;
-        if (!isReferencedType(imageDefinitions, offset, reader.offset - 1))
+        if (!isReferencedTypeIndex(imageDefinitions, typeDef.typeIndex))
             continue;
         typeDefinitions.push(typeDef);
     }
     return typeDefinitions;
 }
-function readMethodDefinitions(reader, offset, size) {
+function readMethodDefinitions(reader, offset, size, version) {
     reader.seek(offset);
     const methodDefinitions = [];
     const methodsEnd = offset + size;
     let i = 0;
     while (reader.offset < methodsEnd) {
+        const nameIndex = reader.readUint32();
+        const declaringType = reader.readInt32();
+        const returnType = reader.readInt32();
+        const parameterStart = reader.readInt32();
+        const customAttributeIndex = hasCustomAttributeIndexInMethodDefinition(version)
+            ? reader.readInt32()
+            : -1;
+        const genericContainerIndex = reader.readInt32();
+        const actualMethodIndex = hasLegacyMethodMetadataFields(version)
+            ? reader.readInt32()
+            : -1;
+        const invokerIndex = hasLegacyMethodMetadataFields(version)
+            ? reader.readInt32()
+            : -1;
+        const delegateWrapperIndex = hasLegacyMethodMetadataFields(version)
+            ? reader.readInt32()
+            : -1;
+        const rgctxStartIndex = hasLegacyMethodMetadataFields(version)
+            ? reader.readInt32()
+            : -1;
+        const rgctxCount = hasLegacyMethodMetadataFields(version)
+            ? reader.readInt32()
+            : 0;
         methodDefinitions.push({
             methodIndex: i,
-            nameIndex: reader.readUint32(),
-            declaringType: reader.readInt32(),
-            returnType: reader.readInt32(),
-            parameterStart: reader.readInt32(),
-            customAttributeIndex: reader.readInt32(),
-            genericContainerIndex: reader.readInt32(),
-            actualMethodIndex: reader.readInt32(),
-            invokerIndex: reader.readInt32(),
-            delegateWrapperIndex: reader.readInt32(),
-            rgctxStartIndex: reader.readInt32(),
-            rgctxCount: reader.readInt32(),
+            nameIndex,
+            declaringType,
+            returnType,
+            parameterStart,
+            customAttributeIndex,
+            genericContainerIndex,
+            actualMethodIndex,
+            invokerIndex,
+            delegateWrapperIndex,
+            rgctxStartIndex,
+            rgctxCount,
             token: reader.readUint32(),
             flags: reader.readUint16(),
             iflags: reader.readUint16(),
@@ -2076,7 +2126,7 @@ class Runtime {
             });
             wail.parse();
             this.logger.debug("after wail parse importobj.env is", importObject.env);
-            WebAssembly.instantiate(wail.write(), importObject).then((instantiatedSource) => {
+            this.instantiate(wail.write(), importObject).then((instantiatedSource) => {
                 // Fallback for hooking functions that are invoked indirectly
                 const unappliedHooks = this.getUnappliedHooks();
                 const tableName = this.tableName ||
@@ -6870,7 +6920,7 @@ class WailParser extends BufferReader {
 /******/ 	
 /******/ 	/* webpack/runtime/getFullHash */
 /******/ 	(() => {
-/******/ 		__webpack_require__.h = () => ("e10cd5aea370f1e52179")
+/******/ 		__webpack_require__.h = () => ("d41d8eb925d5c318b3b8")
 /******/ 	})();
 /******/ 	
 /******/ 	/* webpack/runtime/hasOwnProperty shorthand */

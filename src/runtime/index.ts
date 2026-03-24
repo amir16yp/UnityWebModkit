@@ -453,8 +453,10 @@ export class Runtime {
         });
         wail.parse();
         this.logger.debug("after wail parse importobj.env is", importObject.env);
-        WebAssembly.instantiate(wail.write(), importObject).then(
-          (instantiatedSource) => {
+        this.instantiate(wail.write(), importObject).then(
+          (
+            instantiatedSource: WebAssembly.WebAssemblyInstantiatedSource,
+          ) => {
             // Fallback for hooking functions that are invoked indirectly
             const unappliedHooks = this.getUnappliedHooks();
             const tableName: string =

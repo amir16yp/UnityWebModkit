@@ -163,6 +163,22 @@ type Il2CppMethodDefinition = {
   parameterCount: number;
 };
 
+function hasCustomAttributeIndexInTypeDefinition(version: number) {
+  return version <= 24;
+}
+
+function hasRGCTXInTypeDefinition(version: number) {
+  return version <= 24.1;
+}
+
+function hasCustomAttributeIndexInMethodDefinition(version: number) {
+  return version <= 24;
+}
+
+function hasLegacyMethodMetadataFields(version: number) {
+  return version <= 24.1;
+}
+
 export type Il2CppContext = {
   codeGenModules: Il2CppCodeGenModuleCollection;
   codeGenModuleMethodPointers: Il2CppCodeGenModuleMethodPointers;
@@ -382,19 +398,14 @@ function getStringFromIndex(
   return reader.readNullTerminatedUTF8String();
 }
 
-function isReferencedType(
+function isReferencedTypeIndex(
   imageDefinitions: Il2CppImageDefinition[],
-  typeDefinitionsOffset: number,
-  readerOffset: number,
+  typeIndex: number,
 ) {
-  const typeDefStructSize = 88;
-
   for (const imageDef of imageDefinitions) {
-    let typeStart =
-      imageDef.typeStart * typeDefStructSize + typeDefinitionsOffset;
-    let typeCount = imageDef.typeCount * typeDefStructSize;
-    let typeEnd = typeStart + typeCount;
-    if (readerOffset >= typeStart && readerOffset < typeEnd) {
+    const typeStart = imageDef.typeStart;
+    const typeEnd = typeStart + imageDef.typeCount;
+    if (typeIndex >= typeStart && typeIndex < typeEnd) {
       return true;
     }
   }
@@ -443,6 +454,7 @@ async function createMetadataFromSupportedVersion(
     header.typeDefinitionsOffset,
     header.typeDefinitionsSize,
     referencedImageDefs,
+    version,
   );
   console.log("\n========== EXTRACTED TYPE DEFINITIONS ==========");
   console.log(`Total types extracted: ${typeDefs.length}`);
@@ -465,6 +477,7 @@ async function createMetadataFromSupportedVersion(
     reader,
     header.methodsOffset,
     header.methodsSize,
+    version,
   );
   const referencedMethodDefs = [];
   i = 0;
@@ -620,23 +633,41 @@ function readTypeDefinitions(
   offset: number,
   size: number,
   imageDefinitions: Il2CppImageDefinition[],
+  version: number,
 ): Il2CppTypeDefinition[] {
   reader.seek(offset);
   const typeDefinitions = [];
   const typesEnd = offset + size;
   let i = 0;
   while (reader.offset < typesEnd) {
+    const nameIndex = reader.readUint32();
+    const namespaceIndex = reader.readUint32();
+    const customAttributeIndex = hasCustomAttributeIndexInTypeDefinition(version)
+      ? reader.readInt32()
+      : -1;
+    const byvalTypeIndex = reader.readInt32();
+    const byrefTypeIndex = version <= 24.5 ? reader.readInt32() : -1;
+    const declaringTypeIndex = reader.readInt32();
+    const parentIndex = reader.readInt32();
+    const elementTypeIndex = reader.readInt32();
+    const rgctxStartIndex = hasRGCTXInTypeDefinition(version)
+      ? reader.readInt32()
+      : -1;
+    const rgctxCount = hasRGCTXInTypeDefinition(version)
+      ? reader.readInt32()
+      : 0;
+    const genericContainerIndex = reader.readInt32();
     const typeDef = {
       typeIndex: i,
-      nameIndex: reader.readUint32(),
-      namespaceIndex: reader.readUint32(),
-      customAttributeIndex: reader.readInt32(),
-      byvalTypeIndex: reader.readInt32(),
-      byrefTypeIndex: reader.readInt32(),
-      declaringTypeIndex: reader.readInt32(),
-      parentIndex: reader.readInt32(),
-      elementTypeIndex: reader.readInt32(),
-      genericContainerIndex: reader.readInt32(),
+      nameIndex,
+      namespaceIndex,
+      customAttributeIndex,
+      byvalTypeIndex,
+      byrefTypeIndex,
+      declaringTypeIndex,
+      parentIndex,
+      elementTypeIndex,
+      genericContainerIndex,
       flags: reader.readUint32(),
       fieldStart: reader.readInt32(),
       methodStart: reader.readInt32(),
@@ -646,8 +677,8 @@ function readTypeDefinitions(
       interfacesStart: reader.readInt32(),
       vtableStart: reader.readInt32(),
       interfaceOffsetsStart: reader.readInt32(),
-      rgctxStartIndex: reader.readInt32(),
-      rgctxCount: reader.readInt32(),
+      rgctxStartIndex,
+      rgctxCount,
       method_count: reader.readUint16(),
       property_count: reader.readUint16(),
       field_count: reader.readUint16(),
@@ -660,7 +691,7 @@ function readTypeDefinitions(
       token: reader.readUint32(),
     };
     i++;
-    if (!isReferencedType(imageDefinitions, offset, reader.offset - 1))
+    if (!isReferencedTypeIndex(imageDefinitions, typeDef.typeIndex))
       continue;
     typeDefinitions.push(typeDef);
   }
@@ -671,25 +702,49 @@ function readMethodDefinitions(
   reader: BinaryReader,
   offset: number,
   size: number,
+  version: number,
 ): Il2CppMethodDefinition[] {
   reader.seek(offset);
   const methodDefinitions = [];
   const methodsEnd = offset + size;
   let i = 0;
   while (reader.offset < methodsEnd) {
+    const nameIndex = reader.readUint32();
+    const declaringType = reader.readInt32();
+    const returnType = reader.readInt32();
+    const parameterStart = reader.readInt32();
+    const customAttributeIndex = hasCustomAttributeIndexInMethodDefinition(version)
+      ? reader.readInt32()
+      : -1;
+    const genericContainerIndex = reader.readInt32();
+    const actualMethodIndex = hasLegacyMethodMetadataFields(version)
+      ? reader.readInt32()
+      : -1;
+    const invokerIndex = hasLegacyMethodMetadataFields(version)
+      ? reader.readInt32()
+      : -1;
+    const delegateWrapperIndex = hasLegacyMethodMetadataFields(version)
+      ? reader.readInt32()
+      : -1;
+    const rgctxStartIndex = hasLegacyMethodMetadataFields(version)
+      ? reader.readInt32()
+      : -1;
+    const rgctxCount = hasLegacyMethodMetadataFields(version)
+      ? reader.readInt32()
+      : 0;
     methodDefinitions.push({
       methodIndex: i,
-      nameIndex: reader.readUint32(),
-      declaringType: reader.readInt32(),
-      returnType: reader.readInt32(),
-      parameterStart: reader.readInt32(),
-      customAttributeIndex: reader.readInt32(),
-      genericContainerIndex: reader.readInt32(),
-      actualMethodIndex: reader.readInt32(),
-      invokerIndex: reader.readInt32(),
-      delegateWrapperIndex: reader.readInt32(),
-      rgctxStartIndex: reader.readInt32(),
-      rgctxCount: reader.readInt32(),
+      nameIndex,
+      declaringType,
+      returnType,
+      parameterStart,
+      customAttributeIndex,
+      genericContainerIndex,
+      actualMethodIndex,
+      invokerIndex,
+      delegateWrapperIndex,
+      rgctxStartIndex,
+      rgctxCount,
       token: reader.readUint32(),
       flags: reader.readUint16(),
       iflags: reader.readUint16(),
