@@ -26,7 +26,9 @@ export class Runtime {
     this.startedInitializing = true;
     this.hookWasmInstantiate();
     this.preloadPromise = preload();
-    await this.preloadPromise;
+    const webData = await this.preloadPromise;
+    console.log(webData);
+
   }
 
   private hookWasmInstantiate() {
