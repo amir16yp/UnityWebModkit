@@ -7,7 +7,9 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "build": "del /q /s dist && tsc && npx webpack && powershell -Command \"(Get-Content -Path ./dist/*.js -Raw) -replace 'window.UnityWebModkit=n', 'if (!unsafeWindow?.UnityWebModkit)unsafeWindow.UnityWebModkit = n,window.UnityWebModkit = n' | Set-Content -Path ./dist/*.js\"",
-    "mybuild": "rm -rf dist && tsc && webpack && sed -i 's/window.UnityWebModkit=n/if (!unsafeWindow?.UnityWebModkit)unsafeWindow.UnityWebModkit = n,window.UnityWebModkit = n/g' dist/*.js"
+    "mybuild": "rm -rf dist && tsc && webpack && sed -i 's/window.UnityWebModkit=n/if (!unsafeWindow?.UnityWebModkit)unsafeWindow.UnityWebModkit = n,window.UnityWebModkit = n/g' dist/*.js",
+    "build:dev": "del /q /s dist && tsc && npx webpack && powershell -Command \"Copy-Item -Path (Get-ChildItem -Path ./dist/*.js).FullName -Destination ./dev/unitywebmodkit.js\"",
+    "serve": "npm run build:dev && http-server dev -p 8080"
   },
   "files": [
     "lib"
@@ -17,6 +19,7 @@
   "license": "ISC",
   "devDependencies": {
     "@rspack/cli": "^0.2.8",
+    "http-server": "^14.1.1",
     "prettier": "3.0.0",
     "ts-loader": "^9.4.4",
     "ts-node": "^10.9.1",

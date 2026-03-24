@@ -261,11 +261,14 @@ export function createIl2CppContext(
   );
   const codeGenModules: Il2CppCodeGenModuleCollection = {};
   const codeGenModuleMethodPointers: Il2CppCodeGenModuleMethodPointers = {};
+  console.log("\n========== CODEGEN MODULES ==========");
   for (let i = 0; i < pCodeGenModules.length; i++) {
     const pCodeGenModule = readCodeGenModule(memoryReader, pCodeGenModules[i]);
     memoryReader.seek(pCodeGenModule.moduleName);
     const moduleName = memoryReader.readNullTerminatedUTF8String();
-    if (!referencedAssemblies?.includes(moduleName)) continue;
+    const isReferenced = referencedAssemblies?.includes(moduleName);
+    console.log(`[${i}] ${moduleName} - ${isReferenced ? '✓ LOADED' : '✗ skipped'} (methodPointers: ${pCodeGenModule.methodPointerCount})`);
+    if (!isReferenced) continue;
     codeGenModules[moduleName] = pCodeGenModule;
     const methodPointers = readCodeGenModuleMethodPointers(
       memoryReader,
@@ -274,6 +277,7 @@ export function createIl2CppContext(
     );
     codeGenModuleMethodPointers[moduleName] = methodPointers;
   }
+  console.log("=====================================\n");
   const scriptData: Il2CppScriptData = {};
   const metadataReader = new BinaryReader(metadata.buffer);
   for (let j = 0; j < metadata.imageDefs.length; j++) {
@@ -327,6 +331,22 @@ export function createIl2CppContext(
       }
     }
   }
+  console.log("\n========== SCRIPT DATA (Type.Method → Function Pointer) ==========");
+  const typeNames = Object.keys(scriptData);
+  console.log(`Total types in scriptData: ${typeNames.length}`);
+  typeNames.forEach((typeName, idx) => {
+    const methods = scriptData[typeName];
+    const methodNames = Object.keys(methods);
+    console.log(`\n[${idx}] ${typeName} (${methodNames.length} methods):`);
+    methodNames.slice(0, 10).forEach(methodName => {
+      console.log(`  - ${methodName} → ${methods[methodName]}`);
+    });
+    if (methodNames.length > 10) {
+      console.log(`  ... and ${methodNames.length - 10} more methods`);
+    }
+  });
+  console.log("\n===================================================================\n");
+  
   metadata.typeDefs.forEach((def) => delete def.typeIndex);
   metadata.methodDefs.forEach((def) => delete def.methodIndex);
   return ok({
@@ -373,6 +393,8 @@ export async function createMetadata(
   );
   console.log("imageDefs length: ", imageDefs.length)
   console.log(imageDefs);
+  console.log("\n========== EXTRACTED ASSEMBLIES ==========");
+  console.log(`Total assemblies found: ${imageDefs.length}`);
   const referencedImageDefs = [];
   var i = 0,
     len = imageDefs.length;
@@ -383,17 +405,29 @@ export async function createMetadata(
       header.stringOffset,
       imageDef.nameIndex,
     );
-    console.log("imgname is ", imageName)
-    if (referencedAssemblies?.includes(imageName))
+    const isReferenced = referencedAssemblies?.includes(imageName);
+    console.log(`[${i}] ${imageName} - ${isReferenced ? '✓ REFERENCED' : '✗ skipped'} (typeStart: ${imageDef.typeStart}, typeCount: ${imageDef.typeCount})`);
+    if (isReferenced)
       referencedImageDefs.push(imageDef);
     i++;
   }
+  console.log(`Referenced assemblies: ${referencedImageDefs.length}`);
+  console.log("=========================================\n");
   let typeDefs = readTypeDefinitions(
     reader,
     header.typeDefinitionsOffset,
     header.typeDefinitionsSize,
     referencedImageDefs,
   );
+  console.log("\n========== EXTRACTED TYPE DEFINITIONS ==========");
+  console.log(`Total types extracted: ${typeDefs.length}`);
+  typeDefs.forEach((typeDef, idx) => {
+    const typeName = getStringFromIndex(reader, header.stringOffset, typeDef.nameIndex);
+    const namespaceName = getStringFromIndex(reader, header.stringOffset, typeDef.namespaceIndex);
+    const fullName = namespaceName ? `${namespaceName}.${typeName}` : typeName;
+    console.log(`[${idx}] ${fullName} (methods: ${typeDef.method_count}, fields: ${typeDef.field_count})`);
+  });
+  console.log("================================================\n");
   const methodDefs = readMethodDefinitions(
     reader,
     header.methodsOffset,
@@ -409,6 +443,16 @@ export async function createMetadata(
       referencedMethodDefs.push(methodDef);
     i++;
   }
+  console.log("\n========== EXTRACTED METHOD DEFINITIONS ==========");
+  console.log(`Total methods extracted: ${referencedMethodDefs.length}`);
+  referencedMethodDefs.slice(0, 50).forEach((methodDef, idx) => {
+    const methodName = getStringFromIndex(reader, header.stringOffset, methodDef.nameIndex);
+    console.log(`[${idx}] ${methodName} (params: ${methodDef.parameterCount}, token: 0x${methodDef.token.toString(16)})`);
+  });
+  if (referencedMethodDefs.length > 50) {
+    console.log(`... and ${referencedMethodDefs.length - 50} more methods`);
+  }
+  console.log("==================================================\n");
   const integrityHash = bufToHex(
     await window.crypto.subtle.digest("SHA-256", buffer),
   );

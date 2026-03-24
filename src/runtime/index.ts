@@ -39,6 +39,7 @@ export class Runtime {
   private il2CppContext: Il2CppContext | undefined;
   private resolvedIl2CppFunctions: Record<string, number> = {};
   private instantiateStreaming: any;
+  private instantiate: any;
   private internalMappings: any;
   private internalWasmTypes: any;
   private internalWasmCode: any;
@@ -73,13 +74,16 @@ export class Runtime {
     webData.unityVersion
       ? this.logger.info("Running under Unity %s", webData.unityVersion)
       : this.logger.warn("Unable to determine Unity version from web data!");
-    this.readGlobalMetadataFromStorage(webData).catch(() => {
+    this.readGlobalMetadataFromStorage(webData).catch((error) => {
+      this.logger.warn("Failed to read metadata from storage: %s", error);
+      this.logger.info("Deleting stale UnityWebModkit database...");
       window.indexedDB.deleteDatabase("UnityWebModkit");
       this.loadGlobalMetadata(webData);
     });
   }
 
   private async loadGlobalMetadata(webData: WebData) {
+    this.logger.info("Loading global metadata from web data...");
     const metadataNode = webData.getNode(
       "Il2CppData/Metadata/global-metadata.dat",
     );
@@ -91,9 +95,14 @@ export class Runtime {
       );
       return;
     }
+    this.logger.info("Found global-metadata.dat (%d bytes)", metadataNode.size);
+    
     this.allReferencedAssemblies = this.plugins.flatMap(
       (plugin) => plugin.referencedAssemblies,
     );
+    this.logger.info("Referenced assemblies: %s", this.allReferencedAssemblies.join(", "));
+    
+    this.logger.info("Creating IL2CPP metadata...");
     const globalMetadata = await createMetadata(
       metadataNode.data,
       this.allReferencedAssemblies,
@@ -103,6 +112,7 @@ export class Runtime {
       return;
     }
     this.globalMetadata = globalMetadata.value;
+    this.logger.info("Global metadata loaded successfully (version: %d)", this.globalMetadata.version);
     this.saveGlobalMetadata();
   }
 
@@ -136,7 +146,8 @@ export class Runtime {
 
   private readGlobalMetadataFromStorage(webData: WebData): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      // short circuit
+      // short circuit - always load fresh metadata for now
+      this.logger.debug("Skipping metadata cache, loading fresh metadata");
       reject();
       return;
       indexedDB.databases().then(async (databases) => {
@@ -212,15 +223,68 @@ export class Runtime {
   }
 
   private hookWasmInstantiate() {
+    this.logger.info("Hooking WebAssembly instantiation methods...");
+    
+    // Hook instantiateStreaming (modern Unity)
     this.instantiateStreaming = WebAssembly.instantiateStreaming;
     WebAssembly.instantiateStreaming =
       this.onWebAssemblyInstantiateStreaming.bind(this);
+    
+    // Hook instantiate (older Unity 2019.x)
+    this.instantiate = WebAssembly.instantiate;
+    // @ts-ignore - TypeScript doesn't like our overload, but it works at runtime
+    WebAssembly.instantiate = this.onWebAssemblyInstantiate.bind(this);
+    
+    this.logger.info("WebAssembly hooks installed");
+  }
+
+  private async onWebAssemblyInstantiate(
+    bufferSource: BufferSource | WebAssembly.Module,
+    importObject?: WebAssembly.Imports | undefined,
+  ): Promise<WebAssembly.WebAssemblyInstantiatedSource> {
+    this.logger.info("WebAssembly.instantiate called");
+    
+    // If it's already a Module, use original instantiate
+    if (bufferSource instanceof WebAssembly.Module) {
+      this.logger.debug("Received WebAssembly.Module, passing through");
+      return this.instantiate(bufferSource, importObject);
+    }
+    
+    // Wait for the Il2Cpp metadata to be resolved before continuing
+    this.logger.info("Waiting for global metadata to load...");
+    await waitFor(() => this.globalMetadata);
+    this.logger.info("Global metadata loaded, checking image definitions...");
+    
+    if (this.globalMetadata?.imageDefs.length === 0) {
+      this.logger.warn("No image definitions found, passing through without modding");
+      return this.instantiate(bufferSource, importObject);
+    }
+    
+    this.logger.info("Found %d image definitions, proceeding with modding", this.globalMetadata?.imageDefs.length || 0);
+    
+    let arrayBuffer: ArrayBuffer;
+    if (bufferSource instanceof ArrayBuffer) {
+      arrayBuffer = bufferSource;
+    } else if (ArrayBuffer.isView(bufferSource)) {
+      arrayBuffer = bufferSource.buffer.slice(
+        bufferSource.byteOffset,
+        bufferSource.byteOffset + bufferSource.byteLength
+      );
+    } else {
+      this.logger.error("Unexpected buffer type");
+      return Promise.reject();
+    }
+    
+    this.logger.info("Processing WASM buffer (%d bytes)", arrayBuffer.byteLength);
+    return this.handleBuffer(arrayBuffer, importObject);
   }
 
   private async onWebAssemblyInstantiateStreaming(
     source: Response | PromiseLike<Response>,
     importObject?: WebAssembly.Imports | undefined,
   ): Promise<WebAssembly.WebAssemblyInstantiatedSource> {
+    this.logger.info("WebAssembly.instantiateStreaming called");
+    
     // Wait for the Il2Cpp metadata to be resolved before continuing
     await waitFor(() => this.globalMetadata);
     if (this.globalMetadata?.imageDefs.length === 0)
@@ -236,7 +300,7 @@ export class Runtime {
       );
       return Promise.reject();
     }
-    this.logger.debug("handling buffer ig");
+    this.logger.info("Processing WASM buffer (%d bytes)", bufferSource.byteLength);
     return this.handleBuffer(bufferSource, importObject);
   }
 
@@ -472,7 +536,11 @@ export class Runtime {
   }
 
   private searchWasmBinary(bufferSource: ArrayBuffer) {
-    if (!this.globalMetadata) return;
+    if (!this.globalMetadata) {
+      this.logger.error("Cannot search WASM binary - no global metadata loaded!");
+      return;
+    }
+    this.logger.info("Searching WASM binary for IL2CPP context...");
     const il2CppContext = createIl2CppContext(
       bufferSource,
       this.globalMetadata,
@@ -483,6 +551,7 @@ export class Runtime {
       return;
     }
     this.il2CppContext = il2CppContext.value;
+    this.logger.info("IL2CPP context created successfully");
     this.saveIl2CppContext();
   }
 

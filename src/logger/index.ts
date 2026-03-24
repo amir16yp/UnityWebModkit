@@ -37,7 +37,7 @@ export class Logger {
 
   private log(level: LogLevel, ...args: any[]): void {
     if (this.shouldLog(level) && args.length > 0) {
-      const logPrefix = `%c[${this.name}] %c[${LogLevel[level]}]%c`;
+      const logPrefix = `%c[UnityWebModkit] %c[${this.name}] %c[${LogLevel[level]}]%c`;
       let message = args.shift();
       if (typeof message !== "string") {
         args.push(message);
@@ -45,6 +45,7 @@ export class Logger {
       } else {
         message = " " + message;
       }
+      let mainPrefixStyles = "color: #FFD700; font-weight: bold;";
       let logStyles = "color: #fff;";
       let messageStyles;
 
@@ -68,6 +69,7 @@ export class Logger {
 
       console.log(
         logPrefix + message,
+        mainPrefixStyles,
         logStyles,
         messageStyles,
         "color: default;",
