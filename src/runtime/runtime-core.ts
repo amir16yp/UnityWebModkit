@@ -50,7 +50,7 @@ export class Runtime {
   private async onWebAssemblyInstantiate(
     bufferSource: BufferSource | WebAssembly.Module,
     importObject?: WebAssembly.Imports,
-  ): Promise<WebAssembly.WebAssemblyInstantiatedSource> {
+  ): Promise<WebAssembly.Instance | WebAssembly.WebAssemblyInstantiatedSource> {
     this.logger.info("WebAssembly.instantiate called");
     await this.ensurePreloaded();
     if (!this.instantiate) {
