@@ -1,6 +1,6 @@
 // Exports
 import * as _ from "./runtime";
-export { ValueWrapper } from "./runtime";
+export * from "./runtime";
 export const Runtime = new _.Runtime();
 export * from "./logger";
 export * from "./extras";

@@ -818,6 +818,7 @@ function hasLegacyMethodMetadataFields(version) {
 }
 function createIl2CppContext(buffer, metadata, referencedAssemblies) {
     console.log("createIl2CppContext");
+    const shouldReferenceAll = !referencedAssemblies || referencedAssemblies.length === 0;
     const dataSections = [];
     const reader = new _utils_binary__WEBPACK_IMPORTED_MODULE_1__.BinaryReader(buffer);
     reader.seek(8);
@@ -866,7 +867,7 @@ function createIl2CppContext(buffer, metadata, referencedAssemblies) {
         const pCodeGenModule = readCodeGenModule(memoryReader, pCodeGenModules[i]);
         memoryReader.seek(pCodeGenModule.moduleName);
         const moduleName = memoryReader.readNullTerminatedUTF8String();
-        const isReferenced = referencedAssemblies === null || referencedAssemblies === void 0 ? void 0 : referencedAssemblies.includes(moduleName);
+        const isReferenced = shouldReferenceAll || !!(referencedAssemblies === null || referencedAssemblies === void 0 ? void 0 : referencedAssemblies.includes(moduleName));
         console.log(`[${i}] ${moduleName} - ${isReferenced ? '✓ LOADED' : '✗ skipped'} (methodPointers: ${pCodeGenModule.methodPointerCount})`);
         if (!isReferenced)
             continue;
@@ -875,8 +876,6 @@ function createIl2CppContext(buffer, metadata, referencedAssemblies) {
         codeGenModuleMethodPointers[moduleName] = methodPointers;
     }
     console.log("=====================================\n");
-    metadata.typeDefs.forEach((def) => delete def.typeIndex);
-    metadata.methodDefs.forEach((def) => delete def.methodIndex);
     return (0,neverthrow__WEBPACK_IMPORTED_MODULE_0__.ok)({
         codeGenModules,
         codeGenModuleMethodPointers,
@@ -928,6 +927,14 @@ function getStringFromIndex(reader, base, offset) {
     reader.seek(base + offset);
     return reader.readNullTerminatedUTF8String();
 }
+function normalizeAssemblyName(imageName) {
+    const normalizedPath = imageName.replace(/\\/g, "/");
+    const lastSegment = normalizedPath.split("/").pop() || imageName;
+    if (lastSegment.endsWith(".dll")) {
+        return lastSegment;
+    }
+    return `${lastSegment}.dll`;
+}
 function isReferencedTypeIndex(imageDefinitions, typeIndex) {
     for (const imageDef of imageDefinitions) {
         const typeStart = imageDef.typeStart;
@@ -940,6 +947,7 @@ function isReferencedTypeIndex(imageDefinitions, typeIndex) {
 }
 function createMetadataFromSupportedVersion(reader, buffer, version, referencedAssemblies) {
     return __awaiter(this, void 0, void 0, function* () {
+        const shouldReferenceAll = !referencedAssemblies || referencedAssemblies.length === 0;
         reader.seek(0);
         const header = readHeader(reader);
         const imageDefs = readImageDefinitions(reader, header.imagesOffset, header.imagesSize);
@@ -948,13 +956,20 @@ function createMetadataFromSupportedVersion(reader, buffer, version, referencedA
         console.log("\n========== EXTRACTED ASSEMBLIES ==========");
         console.log(`Total assemblies found: ${imageDefs.length}`);
         const referencedImageDefs = [];
+        const referencedAssemblySet = new Set(referencedAssemblies || []);
+        const typeIndexToAssembly = {};
+        const typeToAssembly = {};
         let i = 0;
         let len = imageDefs.length;
         while (i < len) {
             const imageDef = imageDefs[i];
             const imageName = getStringFromIndex(reader, header.stringOffset, imageDef.nameIndex);
-            const isReferenced = referencedAssemblies === null || referencedAssemblies === void 0 ? void 0 : referencedAssemblies.includes(imageName);
-            console.log(`[${i}] ${imageName} - ${isReferenced ? '✓ REFERENCED' : '✗ skipped'} (typeStart: ${imageDef.typeStart}, typeCount: ${imageDef.typeCount})`);
+            const assemblyName = normalizeAssemblyName(imageName);
+            const isReferenced = shouldReferenceAll || referencedAssemblySet.has(imageName) || referencedAssemblySet.has(assemblyName);
+            console.log(`[${i}] ${assemblyName} - ${isReferenced ? '✓ REFERENCED' : '✗ skipped'} (typeStart: ${imageDef.typeStart}, typeCount: ${imageDef.typeCount})`);
+            for (let typeIndex = imageDef.typeStart; typeIndex < imageDef.typeStart + imageDef.typeCount; typeIndex++) {
+                typeIndexToAssembly[typeIndex] = assemblyName;
+            }
             if (isReferenced) {
                 referencedImageDefs.push(imageDef);
             }
@@ -969,6 +984,7 @@ function createMetadataFromSupportedVersion(reader, buffer, version, referencedA
             const typeName = getStringFromIndex(reader, header.stringOffset, typeDef.nameIndex);
             const namespaceName = getStringFromIndex(reader, header.stringOffset, typeDef.namespaceIndex);
             const fullName = namespaceName ? `${namespaceName}.${typeName}` : typeName;
+            typeToAssembly[fullName] = typeIndexToAssembly[typeDef.typeIndex] || "";
             console.log(`[${idx}] ${fullName} (methods: ${typeDef.method_count}, fields: ${typeDef.field_count})`);
         });
         console.log("================================================\n");
@@ -997,6 +1013,7 @@ function createMetadataFromSupportedVersion(reader, buffer, version, referencedA
         return (0,neverthrow__WEBPACK_IMPORTED_MODULE_0__.ok)({
             buffer,
             header,
+            typeToAssembly,
             imageDefs: referencedImageDefs,
             typeDefs,
             methodDefs: referencedMethodDefs,
@@ -6920,7 +6937,7 @@ class WailParser extends BufferReader {
 /******/ 	
 /******/ 	/* webpack/runtime/getFullHash */
 /******/ 	(() => {
-/******/ 		__webpack_require__.h = () => ("d41d8eb925d5c318b3b8")
+/******/ 		__webpack_require__.h = () => ("60c9f5d9284261212ec1")
 /******/ 	})();
 /******/ 	
 /******/ 	/* webpack/runtime/hasOwnProperty shorthand */

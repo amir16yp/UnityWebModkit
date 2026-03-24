@@ -10,6 +10,7 @@ export type Il2CppMetadata = {
   header: Il2CppGlobalMetadataHeader;
   integrityHash: string;
   referencedAssemblies?: string[];
+  typeToAssembly: Record<string, string>;
   imageDefs: Il2CppImageDefinition[];
   typeDefs: Il2CppTypeDefinition[];
   methodDefs: Il2CppMethodDefinition[];
@@ -232,6 +233,7 @@ export function createIl2CppContext(
   referencedAssemblies?: string[],
 ): Result<Il2CppContext, Il2CppContextCreationError> {
   console.log("createIl2CppContext");
+  const shouldReferenceAll = !referencedAssemblies || referencedAssemblies.length === 0;
   const dataSections: WebAssemblyDataSection[] = [];
   const reader = new BinaryReader(buffer);
   reader.seek(8);
@@ -293,7 +295,8 @@ export function createIl2CppContext(
     const pCodeGenModule = readCodeGenModule(memoryReader, pCodeGenModules[i]);
     memoryReader.seek(pCodeGenModule.moduleName);
     const moduleName = memoryReader.readNullTerminatedUTF8String();
-    const isReferenced = referencedAssemblies?.includes(moduleName);
+    const isReferenced =
+      shouldReferenceAll || !!referencedAssemblies?.includes(moduleName);
     console.log(`[${i}] ${moduleName} - ${isReferenced ? '✓ LOADED' : '✗ skipped'} (methodPointers: ${pCodeGenModule.methodPointerCount})`);
     if (!isReferenced) continue;
     codeGenModules[moduleName] = pCodeGenModule;
@@ -305,8 +308,6 @@ export function createIl2CppContext(
     codeGenModuleMethodPointers[moduleName] = methodPointers;
   }
   console.log("=====================================\n");
-  metadata.typeDefs.forEach((def) => delete def.typeIndex);
-  metadata.methodDefs.forEach((def) => delete def.methodIndex);
   return ok({
     codeGenModules,
     codeGenModuleMethodPointers,
@@ -398,6 +399,15 @@ function getStringFromIndex(
   return reader.readNullTerminatedUTF8String();
 }
 
+function normalizeAssemblyName(imageName: string) {
+  const normalizedPath = imageName.replace(/\\/g, "/");
+  const lastSegment = normalizedPath.split("/").pop() || imageName;
+  if (lastSegment.endsWith(".dll")) {
+    return lastSegment;
+  }
+  return `${lastSegment}.dll`;
+}
+
 function isReferencedTypeIndex(
   imageDefinitions: Il2CppImageDefinition[],
   typeIndex: number,
@@ -419,6 +429,7 @@ async function createMetadataFromSupportedVersion(
   version: number,
   referencedAssemblies?: string[],
 ): Promise<Result<Il2CppMetadata, MetadataParsingError>> {
+  const shouldReferenceAll = !referencedAssemblies || referencedAssemblies.length === 0;
   reader.seek(0);
   const header = readHeader(reader);
   const imageDefs = readImageDefinitions(
@@ -431,6 +442,9 @@ async function createMetadataFromSupportedVersion(
   console.log("\n========== EXTRACTED ASSEMBLIES ==========");
   console.log(`Total assemblies found: ${imageDefs.length}`);
   const referencedImageDefs = [];
+  const referencedAssemblySet = new Set(referencedAssemblies || []);
+  const typeIndexToAssembly: Record<number, string> = {};
+  const typeToAssembly: Record<string, string> = {};
   let i = 0;
   let len = imageDefs.length;
   while (i < len) {
@@ -440,8 +454,12 @@ async function createMetadataFromSupportedVersion(
       header.stringOffset,
       imageDef.nameIndex,
     );
-    const isReferenced = referencedAssemblies?.includes(imageName);
-    console.log(`[${i}] ${imageName} - ${isReferenced ? '✓ REFERENCED' : '✗ skipped'} (typeStart: ${imageDef.typeStart}, typeCount: ${imageDef.typeCount})`);
+    const assemblyName = normalizeAssemblyName(imageName);
+    const isReferenced = shouldReferenceAll || referencedAssemblySet.has(imageName) || referencedAssemblySet.has(assemblyName);
+    console.log(`[${i}] ${assemblyName} - ${isReferenced ? '✓ REFERENCED' : '✗ skipped'} (typeStart: ${imageDef.typeStart}, typeCount: ${imageDef.typeCount})`);
+    for (let typeIndex = imageDef.typeStart; typeIndex < imageDef.typeStart + imageDef.typeCount; typeIndex++) {
+      typeIndexToAssembly[typeIndex] = assemblyName;
+    }
     if (isReferenced) {
       referencedImageDefs.push(imageDef);
     }
@@ -470,6 +488,7 @@ async function createMetadataFromSupportedVersion(
       typeDef.namespaceIndex,
     );
     const fullName = namespaceName ? `${namespaceName}.${typeName}` : typeName;
+    typeToAssembly[fullName] = typeIndexToAssembly[typeDef.typeIndex!] || "";
     console.log(`[${idx}] ${fullName} (methods: ${typeDef.method_count}, fields: ${typeDef.field_count})`);
   });
   console.log("================================================\n");
@@ -511,6 +530,7 @@ async function createMetadataFromSupportedVersion(
   return ok({
     buffer,
     header,
+    typeToAssembly,
     imageDefs: referencedImageDefs,
     typeDefs,
     methodDefs: referencedMethodDefs,
