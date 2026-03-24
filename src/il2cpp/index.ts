@@ -3,6 +3,8 @@ import { BinaryReader, BinaryWriter } from "../utils/binary";
 import { Il2CppContextCreationError, MetadataParsingError } from "../errors";
 import { patternSearch, bufToHex } from "../utils";
 
+const SUPPORTED_METADATA_VERSIONS = new Set([24, 31]);
+
 export type Il2CppMetadata = {
   buffer: ArrayBuffer;
   header: Il2CppGlobalMetadataHeader;
@@ -111,7 +113,9 @@ type Il2CppTypeDefinition = {
   typeIndex?: number;
   nameIndex: number;
   namespaceIndex: number;
+  customAttributeIndex: number;
   byvalTypeIndex: number;
+  byrefTypeIndex: number;
   declaringTypeIndex: number;
   parentIndex: number;
   elementTypeIndex: number;
@@ -125,6 +129,8 @@ type Il2CppTypeDefinition = {
   interfacesStart: number;
   vtableStart: number;
   interfaceOffsetsStart: number;
+  rgctxStartIndex: number;
+  rgctxCount: number;
   method_count: number;
   property_count: number;
   field_count: number;
@@ -142,9 +148,14 @@ type Il2CppMethodDefinition = {
   nameIndex: number;
   declaringType: number;
   returnType: number;
-  returnParameterToken?: number;
   parameterStart: number;
+  customAttributeIndex: number;
   genericContainerIndex: number;
+  actualMethodIndex: number;
+  invokerIndex: number;
+  delegateWrapperIndex: number;
+  rgctxStartIndex: number;
+  rgctxCount: number;
   token: number;
   flags: number;
   iflags: number;
@@ -278,81 +289,12 @@ export function createIl2CppContext(
     codeGenModuleMethodPointers[moduleName] = methodPointers;
   }
   console.log("=====================================\n");
-  const scriptData: Il2CppScriptData = {};
-  const metadataReader = new BinaryReader(metadata.buffer);
-  for (let j = 0; j < metadata.imageDefs.length; j++) {
-    let imageDef = metadata.imageDefs[j];
-    let imageName = getStringFromIndex(
-      metadataReader,
-      metadata.header.stringOffset,
-      imageDef.nameIndex,
-    );
-    let typeEnd = imageDef.typeStart + imageDef.typeCount;
-    for (let k = imageDef.typeStart; k < typeEnd; k++) {
-      let typeDef = metadata.typeDefs.find((def) => def.typeIndex === k);
-      if (!typeDef) continue;
-      let typeName = getStringFromIndex(
-        metadataReader,
-        metadata.header.stringOffset,
-        typeDef.nameIndex,
-      );
-      const namespaceName = getStringFromIndex(
-        metadataReader,
-        metadata.header.stringOffset,
-        typeDef.namespaceIndex,
-      );
-      let methodEnd = typeDef.methodStart + typeDef.method_count;
-      for (let l = typeDef.methodStart; l < methodEnd; l++) {
-        let methodDef = metadata.methodDefs.find(
-          (def) => def.methodIndex === l,
-        );
-        if (!methodDef) continue;
-        let methodName = getStringFromIndex(
-          metadataReader,
-          metadata.header.stringOffset,
-          methodDef.nameIndex,
-        );
-        let methodToken = methodDef.token;
-        let ptrs = codeGenModuleMethodPointers[imageName];
-        let methodPointerIndex = methodToken & 0x00ffffff;
-        const ptr = ptrs[methodPointerIndex - 1];
-        const fullTypeName =
-          namespaceName === "" ? typeName : namespaceName + "." + typeName;
-        if (!scriptData[fullTypeName]) {
-          scriptData[fullTypeName] = {}; // Create an empty object if it doesn't exist
-        }
-        if (scriptData[fullTypeName][methodName] !== undefined) {
-          const ptrRef = scriptData[fullTypeName][methodName];
-          delete scriptData[fullTypeName][methodName];
-          scriptData[fullTypeName][methodName + "_" + ptrRef] = ptrRef;
-          methodName = `${methodName}_${ptr}`;
-        }
-        scriptData[fullTypeName][methodName] = ptr;
-      }
-    }
-  }
-  console.log("\n========== SCRIPT DATA (Type.Method → Function Pointer) ==========");
-  const typeNames = Object.keys(scriptData);
-  console.log(`Total types in scriptData: ${typeNames.length}`);
-  typeNames.forEach((typeName, idx) => {
-    const methods = scriptData[typeName];
-    const methodNames = Object.keys(methods);
-    console.log(`\n[${idx}] ${typeName} (${methodNames.length} methods):`);
-    methodNames.slice(0, 10).forEach(methodName => {
-      console.log(`  - ${methodName} → ${methods[methodName]}`);
-    });
-    if (methodNames.length > 10) {
-      console.log(`  ... and ${methodNames.length - 10} more methods`);
-    }
-  });
-  console.log("\n===================================================================\n");
-  
   metadata.typeDefs.forEach((def) => delete def.typeIndex);
   metadata.methodDefs.forEach((def) => delete def.methodIndex);
   return ok({
     codeGenModules,
     codeGenModuleMethodPointers,
-    scriptData,
+    scriptData: {},
     name: "il2cpp",
   });
 }
@@ -377,98 +319,58 @@ export async function createMetadata(
         "Metadata file supplied is not a valid metadata file.",
       ),
     );
-  // TODO: Support more metadata versions
-  if (version !== 31)
+  if (!SUPPORTED_METADATA_VERSIONS.has(version))
     return err(
       new MetadataParsingError(
         `Metadata file supplied is not a supported version [${version}].`,
       ),
     );
+  const effectiveVersion = detectMetadataVersion(reader, version);
+  console.log(`Detected effective metadata version: ${effectiveVersion}`);
+  return createMetadataFromSupportedVersion(
+    reader,
+    buffer,
+    effectiveVersion,
+    referencedAssemblies,
+  );
+}
+
+function detectMetadataVersion(reader: BinaryReader, version: number) {
+  if (version !== 24) {
+    return version;
+  }
+
   reader.seek(0);
   const header = readHeader(reader);
+
+  if (header.stringLiteralOffset === 264) {
+    const imageDefs = readImageDefinitions(
+      reader,
+      header.imagesOffset,
+      header.imagesSize,
+    );
+    if (header.assembliesSize / 68 < imageDefs.length) {
+      return 24.4;
+    }
+    return 24.2;
+  }
+
   const imageDefs = readImageDefinitions(
     reader,
     header.imagesOffset,
     header.imagesSize,
   );
-  console.log("imageDefs length: ", imageDefs.length)
-  console.log(imageDefs);
-  console.log("\n========== EXTRACTED ASSEMBLIES ==========");
-  console.log(`Total assemblies found: ${imageDefs.length}`);
-  const referencedImageDefs = [];
-  var i = 0,
-    len = imageDefs.length;
-  while (i < len) {
-    const imageDef = imageDefs[i];
-    const imageName = getStringFromIndex(
-      reader,
-      header.stringOffset,
-      imageDef.nameIndex,
-    );
-    const isReferenced = referencedAssemblies?.includes(imageName);
-    console.log(`[${i}] ${imageName} - ${isReferenced ? '✓ REFERENCED' : '✗ skipped'} (typeStart: ${imageDef.typeStart}, typeCount: ${imageDef.typeCount})`);
-    if (isReferenced)
-      referencedImageDefs.push(imageDef);
-    i++;
+  const hasNonLegacyImageTokens = imageDefs.some((imageDef) => imageDef.token !== 1);
+
+  if (!hasNonLegacyImageTokens) {
+    return 24;
   }
-  console.log(`Referenced assemblies: ${referencedImageDefs.length}`);
-  console.log("=========================================\n");
-  let typeDefs = readTypeDefinitions(
-    reader,
-    header.typeDefinitionsOffset,
-    header.typeDefinitionsSize,
-    referencedImageDefs,
-  );
-  console.log("\n========== EXTRACTED TYPE DEFINITIONS ==========");
-  console.log(`Total types extracted: ${typeDefs.length}`);
-  typeDefs.forEach((typeDef, idx) => {
-    const typeName = getStringFromIndex(reader, header.stringOffset, typeDef.nameIndex);
-    const namespaceName = getStringFromIndex(reader, header.stringOffset, typeDef.namespaceIndex);
-    const fullName = namespaceName ? `${namespaceName}.${typeName}` : typeName;
-    console.log(`[${idx}] ${fullName} (methods: ${typeDef.method_count}, fields: ${typeDef.field_count})`);
-  });
-  console.log("================================================\n");
-  const methodDefs = readMethodDefinitions(
-    reader,
-    header.methodsOffset,
-    header.methodsSize,
-  );
-  const referencedMethodDefs = [];
-  (i = 0), (len = methodDefs.length);
-  while (i < len) {
-    const methodDef = methodDefs[i];
-    if (
-      typeDefs.findIndex((t) => t.typeIndex === methodDef.declaringType) !== -1
-    )
-      referencedMethodDefs.push(methodDef);
-    i++;
+
+  if (header.assembliesSize / 64 === imageDefs.length) {
+    return 24.5;
   }
-  console.log("\n========== EXTRACTED METHOD DEFINITIONS ==========");
-  console.log(`Total methods extracted: ${referencedMethodDefs.length}`);
-  referencedMethodDefs.slice(0, 50).forEach((methodDef, idx) => {
-    const methodName = getStringFromIndex(reader, header.stringOffset, methodDef.nameIndex);
-    console.log(`[${idx}] ${methodName} (params: ${methodDef.parameterCount}, token: 0x${methodDef.token.toString(16)})`);
-  });
-  if (referencedMethodDefs.length > 50) {
-    console.log(`... and ${referencedMethodDefs.length - 50} more methods`);
-  }
-  console.log("==================================================\n");
-  const integrityHash = bufToHex(
-    await window.crypto.subtle.digest("SHA-256", buffer),
-  );
-  return ok({
-    buffer,
-    header,
-    imageDefs: referencedImageDefs,
-    typeDefs,
-    methodDefs,
-    originalImageDefCount: imageDefs.length,
-    originalMethodDefCount: methodDefs.length,
-    version,
-    name: "metadata",
-    referencedAssemblies,
-    integrityHash,
-  });
+
+  return 24.1;
 }
 
 function getStringFromIndex(
@@ -485,7 +387,7 @@ function isReferencedType(
   typeDefinitionsOffset: number,
   readerOffset: number,
 ) {
-  const typeDefStructSize = 88; // TODO: define this somewhere else
+  const typeDefStructSize = 88;
 
   for (const imageDef of imageDefinitions) {
     let typeStart =
@@ -498,6 +400,114 @@ function isReferencedType(
   }
 
   return false;
+}
+
+async function createMetadataFromSupportedVersion(
+  reader: BinaryReader,
+  buffer: ArrayBuffer,
+  version: number,
+  referencedAssemblies?: string[],
+): Promise<Result<Il2CppMetadata, MetadataParsingError>> {
+  reader.seek(0);
+  const header = readHeader(reader);
+  const imageDefs = readImageDefinitions(
+    reader,
+    header.imagesOffset,
+    header.imagesSize,
+  );
+  console.log("imageDefs length: ", imageDefs.length);
+  console.log(imageDefs);
+  console.log("\n========== EXTRACTED ASSEMBLIES ==========");
+  console.log(`Total assemblies found: ${imageDefs.length}`);
+  const referencedImageDefs = [];
+  let i = 0;
+  let len = imageDefs.length;
+  while (i < len) {
+    const imageDef = imageDefs[i];
+    const imageName = getStringFromIndex(
+      reader,
+      header.stringOffset,
+      imageDef.nameIndex,
+    );
+    const isReferenced = referencedAssemblies?.includes(imageName);
+    console.log(`[${i}] ${imageName} - ${isReferenced ? '✓ REFERENCED' : '✗ skipped'} (typeStart: ${imageDef.typeStart}, typeCount: ${imageDef.typeCount})`);
+    if (isReferenced) {
+      referencedImageDefs.push(imageDef);
+    }
+    i++;
+  }
+  console.log(`Referenced assemblies: ${referencedImageDefs.length}`);
+  console.log("=========================================\n");
+  const typeDefs = readTypeDefinitions(
+    reader,
+    header.typeDefinitionsOffset,
+    header.typeDefinitionsSize,
+    referencedImageDefs,
+  );
+  console.log("\n========== EXTRACTED TYPE DEFINITIONS ==========");
+  console.log(`Total types extracted: ${typeDefs.length}`);
+  typeDefs.forEach((typeDef, idx) => {
+    const typeName = getStringFromIndex(
+      reader,
+      header.stringOffset,
+      typeDef.nameIndex,
+    );
+    const namespaceName = getStringFromIndex(
+      reader,
+      header.stringOffset,
+      typeDef.namespaceIndex,
+    );
+    const fullName = namespaceName ? `${namespaceName}.${typeName}` : typeName;
+    console.log(`[${idx}] ${fullName} (methods: ${typeDef.method_count}, fields: ${typeDef.field_count})`);
+  });
+  console.log("================================================\n");
+  const methodDefs = readMethodDefinitions(
+    reader,
+    header.methodsOffset,
+    header.methodsSize,
+  );
+  const referencedMethodDefs = [];
+  i = 0;
+  len = methodDefs.length;
+  while (i < len) {
+    const methodDef = methodDefs[i];
+    if (
+      typeDefs.findIndex((t) => t.typeIndex === methodDef.declaringType) !== -1
+    ) {
+      referencedMethodDefs.push(methodDef);
+    }
+    i++;
+  }
+  console.log("\n========== EXTRACTED METHOD DEFINITIONS ==========");
+  console.log(`Total methods extracted: ${referencedMethodDefs.length}`);
+  referencedMethodDefs.slice(0, 50).forEach((methodDef, idx) => {
+    const methodName = getStringFromIndex(
+      reader,
+      header.stringOffset,
+      methodDef.nameIndex,
+    );
+    console.log(`[${idx}] ${methodName} (params: ${methodDef.parameterCount}, token: 0x${methodDef.token.toString(16)})`);
+  });
+  if (referencedMethodDefs.length > 50) {
+    console.log(`... and ${referencedMethodDefs.length - 50} more methods`);
+  }
+  console.log("==================================================\n");
+  const integrityHash = bufToHex(
+    await window.crypto.subtle.digest("SHA-256", buffer),
+  );
+  return ok({
+    buffer,
+    header,
+    imageDefs: referencedImageDefs,
+    typeDefs,
+    methodDefs: referencedMethodDefs,
+    originalImageDefCount: imageDefs.length,
+    originalMethodDefCount: methodDefs.length,
+    version,
+    name: "metadata",
+    referencedAssemblies,
+    integrityHash,
+  });
 }
 
 function readHeader(reader: BinaryReader): Il2CppGlobalMetadataHeader {
@@ -544,24 +554,24 @@ function readHeader(reader: BinaryReader): Il2CppGlobalMetadataHeader {
     interfaceOffsetsSize: reader.readInt32(),
     typeDefinitionsOffset: reader.readUint32(),
     typeDefinitionsSize: reader.readInt32(),
-    /*rgctxEntriesOffset: reader.readUint32(), Max v24.1
-        //rgctxEntriesCount: reader.readInt32(),*/
+    // rgctxEntriesOffset: reader.readUint32(), Max v24.1
+    // rgctxEntriesCount: reader.readInt32(), Max v24.1
     imagesOffset: reader.readUint32(),
     imagesSize: reader.readInt32(),
     assembliesOffset: reader.readUint32(),
     assembliesSize: reader.readInt32(),
-    /*metadataUsageListsOffset: reader.readUint32(), Max v24.5
-        metadataUsageListsCount: reader.readInt32(),
-        metadataUsagePairsOffset: reader.readUint32(),
-        metadataUsagePairsCount: reader.readInt32(),*/
+    // metadataUsageListsOffset: reader.readUint32(), Max v24.5
+    // metadataUsageListsCount: reader.readInt32(),
+    // metadataUsagePairsOffset: reader.readUint32(),
+    // metadataUsagePairsCount: reader.readInt32(), Max v24.5
     fieldRefsOffset: reader.readUint32(),
     fieldRefsSize: reader.readInt32(),
     referencedAssembliesOffset: reader.readInt32(),
     referencedAssembliesSize: reader.readInt32(),
-    /*attributesInfoOffset: reader.readUint32(), Max v27.2
-        attributesInfoCount: reader.readInt32(),
-        attributeTypesOffset: reader.readUint32(),
-        attributeTypesCount: reader.readInt32(),*/
+    // attributesInfoOffset: reader.readUint32(), Max v27.2
+    // attributesInfoCount: reader.readInt32(),
+    // attributeTypesOffset: reader.readUint32(),
+    // attributeTypesCount: reader.readInt32(), Max v27.2
     attributeDataOffset: reader.readUint32(),
     attributeDataSize: reader.readInt32(),
     attributeDataRangeOffset: reader.readUint32(),
@@ -620,7 +630,9 @@ function readTypeDefinitions(
       typeIndex: i,
       nameIndex: reader.readUint32(),
       namespaceIndex: reader.readUint32(),
+      customAttributeIndex: reader.readInt32(),
       byvalTypeIndex: reader.readInt32(),
+      byrefTypeIndex: reader.readInt32(),
       declaringTypeIndex: reader.readInt32(),
       parentIndex: reader.readInt32(),
       elementTypeIndex: reader.readInt32(),
@@ -634,6 +646,8 @@ function readTypeDefinitions(
       interfacesStart: reader.readInt32(),
       vtableStart: reader.readInt32(),
       interfaceOffsetsStart: reader.readInt32(),
+      rgctxStartIndex: reader.readInt32(),
+      rgctxCount: reader.readInt32(),
       method_count: reader.readUint16(),
       property_count: reader.readUint16(),
       field_count: reader.readUint16(),
@@ -668,9 +682,14 @@ function readMethodDefinitions(
       nameIndex: reader.readUint32(),
       declaringType: reader.readInt32(),
       returnType: reader.readInt32(),
-      returnParameterToken: reader.readInt32(),
       parameterStart: reader.readInt32(),
+      customAttributeIndex: reader.readInt32(),
       genericContainerIndex: reader.readInt32(),
+      actualMethodIndex: reader.readInt32(),
+      invokerIndex: reader.readInt32(),
+      delegateWrapperIndex: reader.readInt32(),
+      rgctxStartIndex: reader.readInt32(),
+      rgctxCount: reader.readInt32(),
       token: reader.readUint32(),
       flags: reader.readUint16(),
       iflags: reader.readUint16(),

@@ -58,12 +58,12 @@ async function maybeDecompressUnityWebData(buffer: ArrayBuffer): Promise<ArrayBu
   logger.info("Detected UnityWeb %s-compressed data, decompressing...", format);
   let decompressedBuffer: ArrayBuffer;
   if (format === "brotli") {
-    const compression = (window as any).UnityLoader?.Compression;
-    const decompress = compression?.decompress;
+    const brotliCompression = (window as any).UnityLoader?.Compression?.brotli;
+    const decompress = brotliCompression?.decompress;
     if (typeof decompress !== "function") {
       throw new Error("UnityLoader brotli decompressor is unavailable");
     }
-    const decompressed = decompress.call(compression, new Uint8Array(buffer));
+    const decompressed = decompress.call(brotliCompression, new Uint8Array(buffer));
     if (!(decompressed instanceof Uint8Array)) {
       throw new Error("UnityLoader brotli decompressor returned an invalid result");
     }
